@@ -141,6 +141,7 @@ type Config struct {
 	Log                       LogConfig
 	ModelsDevAutoSyncOverride *bool
 	CodexLive                 CodexLiveConfig
+	Observation               ObservationConfig
 }
 
 // Settings is the dynamic settings shape shared by system and group layers.
@@ -276,6 +277,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	observation, err := loadObservationConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		ClientIPHeader: clientIPHeader,
 		TrustedProxies: trustedProxies,
@@ -303,6 +309,7 @@ func Load() (*Config, error) {
 		},
 		ModelsDevAutoSyncOverride: modelsDevAutoSyncOverride,
 		CodexLive:                 liveConfig,
+		Observation:               observation,
 	}, nil
 }
 

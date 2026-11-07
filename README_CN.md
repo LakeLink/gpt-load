@@ -213,6 +213,8 @@ Windows 普通用户可改为下载 `gpt-load-windows-setup.exe`。双击并确�
 
 ### 环境配置
 
+受信观测插件可通过 `wss://<host>/api/plugins/<plugin_id>/events` 订阅 Codex 订阅请求的结果，使用独立 Bearer token 和 `gpt-load.observation.v1.msgpack` 子协议。连接后发送 `subscribe` 开始采集，结束时发送 `unsubscribe`。结果复用请求日志、耗时、完整尝试、用量及已有可选请求正文，每个订阅使用有界队列。参见[观测协议与样本](internal/observation/README.md)。
+
 应用启动时读取当前目录的 `.env`，已有的进程环境变量优先。除特别说明外，修改后需要重启进程或容器；常用配置模板见 [`.env.example`](.env.example)。
 
 <details>
@@ -242,6 +244,11 @@ Windows 普通用户可改为下载 `gpt-load-windows-setup.exe`。双击并确�
 | `LOG_LEVEL`                     | `info`                                      | 支持 `panic`、`fatal`、`error`、`warn`、`warning`、`info`、`debug`、`trace`；无效值会告警并回退到 `info`。                                               |
 | `LOG_FORMAT`                    | `text`                                      | 支持 `text`、`json`；其他值会导致启动失败。                                                                                                              |
 | `MODELS_DEV_AUTO_SYNC_ENABLED`  | 未设置，初始默认 `true`                     | 未设置时使用管理界面的持久化设置；设置后强制开启或关闭 Models.dev 自动同步，并使管理界面中的同名选项变为只读。                                           |
+| `OBSERVATION_PLUGINS` | `空` | 受信插件凭据 JSON 数组，例如 `[{"id":"research","token":"independent-secret"}]`；空配置关闭观测。 |
+| `OBSERVATION_QUEUE_MAX_EVENTS` | `200` | 每个已订阅插件的队列条数上限；满时淘汰最老事件。 |
+| `OBSERVATION_QUEUE_MAX_BYTES` | `4000000` | 每个已订阅插件的编码队列字节上限，同时作为客户端接收预算。 |
+| `OBSERVATION_EVENT_MAX_BYTES` | `1048576` | 事件大小阈值；正整数，最大为队列字节预算。 |
+| `OBSERVATION_WRITE_TIMEOUT_SECONDS` | `5` | 插件单次写入或心跳的超时秒数，正整数。 |
 
 环境代理仅在凭据、Group 和全局设置都未指定代理时生效。
 

@@ -5,8 +5,10 @@ go 1.27.3
 require (
 	github.com/andybalholm/brotli v1.2.7
 	github.com/buger/jsonparser v1.6.1
+	github.com/coder/websocket v1.8.15
 	github.com/gin-gonic/gin v1.12.0
 	github.com/glebarez/sqlite v1.11.0
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
 	github.com/klauspost/compress v1.20.3
@@ -24,6 +26,7 @@ require (
 	github.com/tidwall/gjson v1.20.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/tink-crypto/tink-go/v2 v2.9.0
+	github.com/ugorji/go/codec v1.3.1
 	go.uber.org/dig v1.19.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
@@ -83,7 +86,6 @@ require (
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.10.0 // indirect
@@ -130,7 +132,6 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tiktoken-go/tokenizer v0.8.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.74.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect

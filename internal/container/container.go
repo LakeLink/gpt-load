@@ -23,6 +23,7 @@ import (
 	"gpt-load/internal/gateway"
 	"gpt-load/internal/health"
 	"gpt-load/internal/httplifecycle"
+	"gpt-load/internal/observation"
 	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/encryption"
@@ -104,8 +105,12 @@ func BuildContainer(configure ...func(*dig.Container) error) (*dig.Container, er
 			service.SetRPMStore(rpmStore)
 			return service
 		},
-		func(service *requestlog.Service) telemetry.RequestLogSink {
-			return service
+		observation.New,
+		func(service *requestlog.Service, observations *observation.Service, cfg *config.Config) telemetry.RequestLogSink {
+			if len(cfg.Observation.Plugins) == 0 {
+				return service
+			}
+			return observation.RequestLogSink{Logs: service, Observations: observations}
 		},
 		func(service *requestlog.Service) gateway.AccessKeyUsageReader {
 			return service
@@ -372,9 +377,11 @@ func newHTTPRegistry(
 	gatewayHandler *gateway.Handler,
 	controlServer *control.Server,
 	webUIServer *webui.Server,
+	observations *observation.Service,
 ) (*httproute.Registry, error) {
 	return httproute.NewRegistry(
 		app.HTTPModule(),
+		observations.HTTPModule(),
 		controlServer.HTTPModule(),
 		gatewayHandler.HTTPModule(),
 		webUIServer.HTTPModule(),
