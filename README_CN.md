@@ -213,7 +213,7 @@ Windows 普通用户可改为下载 `gpt-load-windows-setup.exe`。双击并确�
 
 ### 环境配置
 
-受信观测插件可通过 `wss://<host>/api/plugins/<plugin_id>/events` 订阅 Codex 订阅请求的 HTTP/SSE 上游传输与最终结果，使用独立 Bearer token 和 `gpt-load.observation.v1.msgpack` 子协议。连接后发送 `subscribe` 开始采集，结束时发送 `unsubscribe`。传输事件携带可得状态码、原始多值头部及请求、尝试、传输身份。结果复用请求日志、耗时、完整尝试、用量及已有可选请求正文，每个订阅使用有界队列。意外断线后保留有界队列，重连订阅可恢复消费；宿主退出沿用全局截止时间排空观测连接。参见[观测协议与样本](internal/observation/README.md)。
+受信观测插件可通过 `wss://<host>/api/plugins/<plugin_id>/events` 订阅 Codex 订阅请求的 HTTP/SSE 上游传输、WebSocket 握手与每轮请求及最终结果，使用独立 Bearer token 和 `gpt-load.observation.v1.msgpack` 子协议。连接后发送 `subscribe` 开始采集，结束时发送 `unsubscribe`。传输事件携带可得状态码、原始多值头部及请求、尝试、传输与实际 WebSocket 连接身份。结果复用请求日志、耗时、完整尝试、用量及已有可选请求正文，每个订阅使用有界队列。意外断线后保留有界队列，重连订阅可恢复消费；宿主退出沿用全局截止时间排空观测连接。参见[观测协议与样本](internal/observation/README.md)。
 
 应用启动时读取当前目录的 `.env`，已有的进程环境变量优先。除特别说明外，修改后需要重启进程或容器；常用配置模板见 [`.env.example`](.env.example)。
 

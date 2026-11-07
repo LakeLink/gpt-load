@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/gptload-embedded/modelcatalog"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	internalexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -50,6 +51,7 @@ type CodexWSSessionOptions struct {
 
 // CodexWSTurnResult 只描述本轮执行，不执行健康、额度或日志记账。
 type CodexWSTurnResult struct {
+	UpstreamConnectionID         string
 	AppliedReasoningEffort       string
 	AppliedReasoningMode         string
 	AppliedReasoningBudgetTokens *int64
@@ -83,6 +85,7 @@ func codexWSError(code string) *CodexWSError {
 
 // CodexWSSession 是由调用者独占的 Codex 上游会话。
 type CodexWSSession struct {
+	connectionID        string
 	lastResponseID      string
 	lastModel           string
 	lastEffort          string
@@ -211,6 +214,7 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 	s.cancel, s.running = cancel, true
 	s.turnDeadline, _ = turnCtx.Deadline()
 	s.activeResponseID, s.interruptResponseID = "", ""
+	result.UpstreamConnectionID = s.connectionID
 	reuse := s.started
 	s.mu.Unlock()
 	cleanupDone := make(chan struct{})
@@ -236,8 +240,29 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 	turnCtx = cliproxyexecutor.WithUpstreamAttemptTracker(turnCtx)
 	// Gorilla 的 Upgrade 读取只设置 deadline；捕获尚未绑定 lifecycle 的连接，
 	// 使主动取消也能中止 TLS/WS 握手，而不必等待握手超时。
+	observer, _ := ctx.Value(codexWSTurnObserverKey{}).(func(ExchangeObservation))
+	var sequence uint64
+	var handshakeSequence uint64
+	var requestHeaders http.Header
+	observe := func(kind, phase string, seq uint64, headers http.Header, status int, body []byte) {
+		if observer != nil {
+			observer(ExchangeObservation{Kind: kind, Phase: phase, Sequence: seq, ObservedAt: time.Now(),
+				Header: headers.Clone(), StatusCode: status, Body: append([]byte(nil), body...), Path: "/v1/responses",
+				UpstreamConnectionID: result.UpstreamConnectionID})
+		}
+	}
 	turnCtx = httptrace.WithClientTrace(turnCtx, &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { s.trackDialConnection(info.Conn) },
+		GotConn: func(info httptrace.GotConnInfo) {
+			s.trackDialConnection(info.Conn)
+			id := uuid.NewString()
+			s.mu.Lock()
+			s.connectionID = id
+			s.mu.Unlock()
+			result.UpstreamConnectionID = id
+			sequence++
+			handshakeSequence = sequence
+			observe("request", "websocket_handshake", handshakeSequence, requestHeaders, 0, nil)
+		},
 	})
 	if reuse {
 		turnCtx = cliproxyexecutor.WithRequiredUpstreamWebsocket(turnCtx)
@@ -270,6 +295,8 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 		headers.Del("Session-Id")
 		headers.Set("Session_id", sessionID)
 	}
+	turnCtx = internallogging.WithFreshResponseHeadersHolder(turnCtx)
+	requestHeaders = headers.Clone()
 	stream, executionErr := s.inner.ExecuteStream(turnCtx, s.auth, cliproxyexecutor.Request{
 		Model: model, Payload: append([]byte(nil), payload...), Format: sdktranslator.FormatOpenAIResponse,
 	}, cliproxyexecutor.Options{
@@ -283,7 +310,31 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 		},
 	})
 	if stream != nil {
+		if handshakeSequence > 0 {
+			observe("response", "websocket_handshake", handshakeSequence, stream.Headers, http.StatusSwitchingProtocols, nil)
+		}
+		sequence++
+		observe("request", "websocket_request", sequence, requestHeaders, 0, payload)
 		result.Headers = stream.Headers.Clone()
+		if len(result.Headers) > 0 {
+			result.HeaderObservedAt = time.Now()
+			if s.options.ObserveHeaders != nil {
+				s.options.ObserveHeaders(result.Headers.Clone(), result.HeaderObservedAt)
+			}
+		}
+	}
+	if executionErr != nil && handshakeSequence > 0 {
+		// SDK 的拒绝错误保留可得状态，原始多值头由逐轮 holder 保存。
+		result.Headers = internallogging.GetResponseHeaders(turnCtx)
+		var status interface{ StatusCode() int }
+		if errors.As(executionErr, &status) {
+			code := status.StatusCode()
+			// CPA 将额度/容量错误归一到 429；这里省略无法证明的原始状态。
+			if code == http.StatusTooManyRequests {
+				code = 0
+			}
+			observe("response", "websocket_handshake", handshakeSequence, result.Headers, code, nil)
+		}
 		if len(result.Headers) > 0 {
 			result.HeaderObservedAt = time.Now()
 			if s.options.ObserveHeaders != nil {
@@ -333,6 +384,7 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 		if errors.As(executionErr, &transient) {
 			failure.TransientRateLimit = transient.IsTransientRateLimit()
 		}
+
 		var headers interface{ Headers() http.Header }
 		if errors.As(executionErr, &headers) {
 			result.Headers = headers.Headers().Clone()

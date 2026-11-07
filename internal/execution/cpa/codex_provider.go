@@ -547,6 +547,6 @@ func codexExchangeObserver(observer func(execution.UpstreamExchange)) func(codex
 	return func(fact codex.ExchangeObservation) {
 		observer(execution.UpstreamExchange{Kind: fact.Kind, Sequence: fact.Sequence, Phase: fact.Phase,
 			ObservedAt: fact.ObservedAt, Header: fact.Header, StatusCode: fact.StatusCode,
-			Method: fact.Method, URL: fact.URL, Protocol: codexUpstreamProtocol(fact.Path)})
+			Method: fact.Method, URL: fact.URL, Body: fact.Body, UpstreamConnectionID: fact.UpstreamConnectionID, Protocol: codexUpstreamProtocol(fact.Path)})
 	}
 }

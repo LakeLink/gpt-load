@@ -102,6 +102,9 @@ func (s *observedWebsocketSession) Interrupt(ctx context.Context, payload []byte
 }
 
 func (s *observedWebsocketSession) ExecuteTurn(ctx context.Context, payload []byte, emit func(context.Context, []byte) error) execution.WebsocketResult {
+	if spec, ok := execution.WebsocketAttempt(ctx); ok {
+		ctx = codex.WithWSTurnObserver(ctx, codexExchangeObserver(s.adapter.exchangeObserver(spec, true)))
+	}
 	return s.WebsocketSession.ExecuteTurn(ctx, payload, func(ctx context.Context, event []byte) error {
 		observedAt := time.Now()
 		windows := codex.NormalizeWebsocketQuotaWindows(event, observedAt)
@@ -174,7 +177,7 @@ func (s *codexWebsocketSession) ExecuteTurn(ctx context.Context, payload []byte,
 	if result.DispatchState == codex.WSMaybeSent {
 		state = execution.DispatchMaybeSent
 	}
-	return execution.WebsocketResult{AppliedReasoning: appliedReasoning(result.AppliedReasoningEffort, result.AppliedReasoningMode, result.AppliedReasoningBudgetTokens), DispatchState: state, Header: result.Headers, HeaderObservedAt: result.HeaderObservedAt, Error: codexWebsocketEvidence(ctx, err)}
+	return execution.WebsocketResult{UpstreamConnectionID: result.UpstreamConnectionID, AppliedReasoning: appliedReasoning(result.AppliedReasoningEffort, result.AppliedReasoningMode, result.AppliedReasoningBudgetTokens), DispatchState: state, Header: result.Headers, HeaderObservedAt: result.HeaderObservedAt, Error: codexWebsocketEvidence(ctx, err)}
 }
 
 func codexWebsocketEvidence(ctx context.Context, err error) *execution.ErrorEvidence {
