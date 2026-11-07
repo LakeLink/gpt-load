@@ -1,6 +1,8 @@
 package observation
 
 import (
+	"bytes"
+
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
 )
@@ -17,7 +19,7 @@ func (s *Service) ObserveExchange(spec execution.AttemptSpec, stream bool, fact 
 			"credential_id": spec.Credential.ID, "credential_version": spec.Credential.Version,
 			"identity_generation": spec.Credential.IdentityGeneration,
 			"model":               spec.UpstreamModel, "protocol": fact.Protocol, "stream": stream,
-			"phase": fact.Phase, "headers": fact.Header,
+			"phase": fact.Phase, "headers": fact.Header.Clone(),
 		}
 		if fact.Method != "" {
 			data["method"] = fact.Method
@@ -29,7 +31,7 @@ func (s *Service) ObserveExchange(spec execution.AttemptSpec, stream bool, fact 
 			data["status_code"] = fact.StatusCode
 		}
 		if fact.Body != nil {
-			data["body"] = fact.Body
+			data["body"] = bytes.Clone(fact.Body)
 		}
 		if fact.UpstreamConnectionID != "" {
 			data["upstream_connection_id"] = fact.UpstreamConnectionID

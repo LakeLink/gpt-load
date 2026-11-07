@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -109,7 +110,6 @@ func TestCodexWSSessionForwardsPreparedHeaders(t *testing.T) {
 			if fact.Header.Get("X-Codex-Turn-State") != "state-fixture" || fact.Header.Get("Authorization") != "Bearer untrusted" {
 				t.Errorf("prepared headers=%v", fact.Header)
 			}
-			fact.Header.Set("X-Codex-Turn-State", "observer mutation")
 		}
 	})
 	if _, err := session.ExecuteTurn(ctx, json.RawMessage(`{"model":"gpt-5","input":"hello"}`), nil); err != nil {
@@ -245,7 +245,11 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	defer cancelFirst()
 	var firstFacts, secondFacts []ExchangeObservation
-	firstCtx = WithCodexWSTurnObserver(firstCtx, func(fact ExchangeObservation) { firstFacts = append(firstFacts, fact) })
+	firstCtx = WithCodexWSTurnObserver(firstCtx, func(fact ExchangeObservation) {
+		fact.Header = fact.Header.Clone()
+		fact.Body = append([]byte(nil), fact.Body...)
+		firstFacts = append(firstFacts, fact)
+	})
 	first, err := session.ExecuteTurn(firstCtx, json.RawMessage(`{"model":"gpt-5","input":"hello","store":false}`), consume)
 	if err != nil {
 		t.Fatal(err)
@@ -254,7 +258,11 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 		t.Fatalf("missing terminal result: %+v", first)
 	}
 	cancelFirst() // 成功请求的 context 结束不应关闭已空闲的会话。
-	secondCtx := WithCodexWSTurnObserver(context.Background(), func(fact ExchangeObservation) { secondFacts = append(secondFacts, fact) })
+	secondCtx := WithCodexWSTurnObserver(context.Background(), func(fact ExchangeObservation) {
+		fact.Header = fact.Header.Clone()
+		fact.Body = append([]byte(nil), fact.Body...)
+		secondFacts = append(secondFacts, fact)
+	})
 	second, err := session.ExecuteTurn(secondCtx, json.RawMessage(fmt.Sprintf(`{"model":"gpt-5","input":"continue","previous_response_id":%q}`, first.ResponseID)), consume)
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +440,11 @@ func TestCodexWSSessionPreservesHandshakeUsageLimitRetryAfter(t *testing.T) {
 	defer server.Close()
 	session := wsTestSession(t, server.URL)
 	var facts []ExchangeObservation
-	ctx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) { facts = append(facts, fact) })
+	ctx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) {
+		fact.Header = fact.Header.Clone()
+		fact.Body = append([]byte(nil), fact.Body...)
+		facts = append(facts, fact)
+	})
 	result, err := session.ExecuteTurn(ctx, json.RawMessage(`{"model":"gpt-5","input":"hello"}`), nil)
 	var failure *CodexWSError
 	if !errors.As(err, &failure) || failure.HTTPStatus != http.StatusTooManyRequests ||
@@ -610,83 +622,76 @@ func TestCodexWSSessionEventFailureClosesConnection(t *testing.T) {
 	}
 }
 
-// 在真实 SDK 的首次 Bind 后关闭连接，确定性制造业务写入失败。
-// 仍使用生产 resource 的 Bind/End，验证 SDK 重拨不能再次发送业务帧。
-type closeFirstWSBinding struct {
-	resource *codexWSResource
-	binds    atomic.Int32
-}
-
-func (lifecycle *closeFirstWSBinding) Bind(closeConnection func() error) error {
-	lifecycle.binds.Add(1)
-	if err := lifecycle.resource.Bind(closeConnection); err != nil {
-		return err
-	}
-	return closeConnection()
-}
-
-func (lifecycle *closeFirstWSBinding) End(reason string) { lifecycle.resource.End(reason) }
-
+// 在握手响应抵达后半关闭客户端写端，确定性制造首帧发送失败。
+// 保留读端以完成真实升级，并覆盖 SDK 重拨成功和重拨失败两条路径。
 func TestCodexWSSessionGuardsSDKSendRetry(t *testing.T) {
-	var frames, handshakes atomic.Int32
-	var handlersMu sync.Mutex
-	var handlers []chan struct{}
-	recordAfterSend := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		done := make(chan struct{})
-		handlersMu.Lock()
-		handlers = append(handlers, done)
-		handlersMu.Unlock()
-		defer close(done)
-		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.Close()
-		// 握手响应已发出，但服务端统计尚未更新，复现客户端先返回的调度顺序。
-		<-recordAfterSend
-		handshakes.Add(1)
-		if _, _, err := conn.ReadMessage(); err == nil {
-			frames.Add(1)
-		}
-	}))
-	defer server.Close()
-	session := wsTestSession(t, server.URL)
-	lifecycle := &closeFirstWSBinding{resource: session.resource}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, err := session.inner.ExecuteStream(ctx, session.auth, cliproxyexecutor.Request{
-		Model: "gpt-5", Payload: []byte(`{"model":"gpt-5","input":"hello"}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat:       sdktranslator.FormatOpenAIResponse,
-		Metadata:           map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: session.id},
-		ExecutionLifecycle: lifecycle,
-	})
-	// 请求结束后立即撤销上下文，收尾统计仍必须有自己的等待时间。
-	cancel()
-	close(recordAfterSend)
-	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
-	defer cancelWait()
-	if err == nil {
-		t.Fatal("failed send succeeded")
-	}
-	// 客户端返回不代表服务端已统计完连接和业务帧；等待真实处理结束再断言。
-	handlersMu.Lock()
-	pendingHandlers := append([]chan struct{}(nil), handlers...)
-	handlersMu.Unlock()
-	for _, done := range pendingHandlers {
-		select {
-		case <-done:
-		case <-waitCtx.Done():
-			t.Fatal("server handlers did not finish after SDK send failure")
-		}
-	}
-	if frames.Load() != 0 || handshakes.Load() < 1 || handshakes.Load() > 2 {
-		t.Fatalf("SDK send failure escaped the lifecycle guard: frames=%d handshakes=%d binds=%d", frames.Load(), handshakes.Load(), lifecycle.binds.Load())
-	}
-	if lifecycle.binds.Load() < 1 || lifecycle.binds.Load() > 2 {
-		t.Fatal("unexpected SDK binding attempts")
+	for _, retry := range []string{"upgrade", "reject"} {
+		t.Run(retry, func(t *testing.T) {
+			var frames, handshakes atomic.Int32
+			release := make(chan struct{})
+			defer close(release)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := handshakes.Add(1)
+				if attempt > 1 && retry == "reject" {
+					w.Header().Set("X-Handshake", "retry-rejected")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				conn, err := (&websocket.Upgrader{}).Upgrade(w, r, http.Header{"X-Handshake": {fmt.Sprint(attempt)}})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer conn.Close()
+				if _, _, err := conn.ReadMessage(); err == nil {
+					frames.Add(1)
+				}
+				<-release
+			}))
+			defer server.Close()
+			session := wsTestSession(t, server.URL)
+			var current net.Conn
+			var dials int
+			ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+				GotConn: func(info httptrace.GotConnInfo) { current = info.Conn; dials++ },
+				GotFirstResponseByte: func() {
+					if dials == 1 {
+						if err := current.(*net.TCPConn).CloseWrite(); err != nil {
+							t.Error(err)
+						}
+					}
+				},
+			})
+			var facts []ExchangeObservation
+			ctx = WithCodexWSTurnObserver(ctx, func(fact ExchangeObservation) {
+				fact.Header = fact.Header.Clone()
+				fact.Body = append([]byte(nil), fact.Body...)
+				facts = append(facts, fact)
+			})
+			_, err := session.ExecuteTurn(ctx, json.RawMessage(`{"model":"gpt-5","input":"hello"}`), nil)
+			if err == nil {
+				t.Fatal("failed send succeeded")
+			}
+			if frames.Load() != 0 || dials != 2 {
+				t.Fatalf("frames=%d dials=%d facts=%+v", frames.Load(), dials, facts)
+			}
+			if len(facts) != 4 {
+				t.Fatalf("lost attempted exchange: %+v", facts)
+			}
+			first := facts[0].UpstreamConnectionID
+			if first == "" || facts[0].Phase != "websocket_handshake" || facts[0].Kind != "request" || facts[0].Sequence != 1 {
+				t.Fatalf("first handshake=%+v", facts[0])
+			}
+			if facts[1].Kind != "response" || facts[1].StatusCode != 101 || facts[1].Header.Get("X-Handshake") != "1" || facts[1].Sequence != 1 || facts[1].UpstreamConnectionID != first {
+				t.Fatalf("lost first upgrade: %+v", facts[1])
+			}
+			if facts[2].Phase != "websocket_request" || facts[2].Kind != "request" || facts[2].Sequence != 2 || facts[2].UpstreamConnectionID != first || !json.Valid(facts[2].Body) {
+				t.Fatalf("lost logical send: %+v", facts[2])
+			}
+			if facts[3].Phase != "websocket_handshake" || facts[3].Kind != "request" || facts[3].Sequence != 3 || facts[3].UpstreamConnectionID == first || facts[3].UpstreamConnectionID == "" {
+				t.Fatalf("replacement association=%+v", facts[3])
+			}
+		})
 	}
 }
 

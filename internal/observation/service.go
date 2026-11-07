@@ -15,6 +15,7 @@ import (
 
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/httproute"
+	"gpt-load/internal/platform/i18n"
 )
 
 type subscription struct {
@@ -41,6 +42,7 @@ type connection struct {
 	done       chan struct{}
 	exited     chan struct{}
 	delivering bool
+	language   string
 }
 
 // Service 按插件身份保留有界采集队列，连接 writer 独立发送。
@@ -64,7 +66,7 @@ func New(cfg *config.Config) *Service {
 }
 
 func (s *Service) HTTPModule() httproute.Module {
-	module := httproute.Module{Name: "observation", Owner: httproute.OwnerPlugin, Auth: httproute.AuthPlugin, Prefix: "/api/plugins", NamespacePrefixes: []string{"/api/plugins"}, Authenticate: s.authenticate}
+	module := httproute.Module{Name: "observation", Owner: httproute.OwnerPlugin, Auth: httproute.AuthPlugin, Prefix: "/api/plugins", NamespacePrefixes: []string{"/api/plugins"}, Authenticate: s.authenticate, BeforeAuth: gin.HandlersChain{i18n.Middleware()}}
 	if len(s.plugins) > 0 {
 		module.Routes = []httproute.Route{{Name: "observation.events", Methods: []string{http.MethodGet}, Path: "/:plugin_id/events", Handlers: gin.HandlersChain{s.handle}}}
 	}
@@ -107,7 +109,7 @@ func (s *Service) handle(c *gin.Context) {
 	}
 	socket.SetReadLimit(ControlReadLimit)
 	ctx, cancel := context.WithCancel(context.Background())
-	conn := &connection{socket: socket, ctx: ctx, cancel: cancel, commands: make(chan controlReply, 1), wake: make(chan struct{}, 1), done: make(chan struct{}), exited: make(chan struct{})}
+	conn := &connection{socket: socket, ctx: ctx, cancel: cancel, language: i18n.GetLanguageFromContext(c), commands: make(chan controlReply, 1), wake: make(chan struct{}, 1), done: make(chan struct{}), exited: make(chan struct{})}
 	p := s.plugins[c.Param("plugin_id")]
 	s.mu.Lock()
 	if s.closing {
@@ -145,13 +147,13 @@ func (s *Service) handle(c *gin.Context) {
 		command, decodeErr := decodeCommand(data)
 		reply := Control{}
 		if kind != websocket.MessageBinary {
-			reply = Control{Type: "error", Code: "unsupported_message", Message: "binary MessagePack control required"}
+			reply = Control{Type: "error", Code: "unsupported_message", Message: i18n.Message(c, "observation.binary_control_required")}
 		} else if decodeErr != nil {
-			reply = Control{Type: "error", CommandID: command.CommandID, Code: "invalid_message", Message: "invalid MessagePack control", fatal: true}
+			reply = Control{Type: "error", CommandID: command.CommandID, Code: "invalid_message", Message: i18n.Message(c, "observation.invalid_control"), fatal: true}
 		} else if strings.TrimSpace(command.CommandID) == "" || command.Type == "" {
-			reply = Control{Type: "error", CommandID: command.CommandID, Code: "invalid_message", Message: "type and command_id are required"}
+			reply = Control{Type: "error", CommandID: command.CommandID, Code: "invalid_message", Message: i18n.Message(c, "observation.control_fields_required")}
 		} else if command.Type != "subscribe" && command.Type != "unsubscribe" {
-			reply = Control{Type: "error", CommandID: command.CommandID, Code: "unknown_command", Message: "unknown control command"}
+			reply = Control{Type: "error", CommandID: command.CommandID, Code: "unknown_command", Message: i18n.Message(c, "observation.unknown_command")}
 		} else {
 			reply = Control{Type: command.Type, CommandID: command.CommandID}
 		}
@@ -245,7 +247,7 @@ func (s *Service) prepare(p *plugin, conn *connection, reply Control) (controlRe
 	switch reply.Type {
 	case "subscribe":
 		if s.closing {
-			result.Control = Control{Type: "error", CommandID: reply.CommandID, Code: "shutting_down", Message: "host is shutting down"}
+			result.Control = Control{Type: "error", CommandID: reply.CommandID, Code: "shutting_down", Message: i18n.T(i18n.GetLocalizer(conn.language), "observation.shutting_down")}
 			break
 		}
 		if p.subscription == nil {
@@ -281,7 +283,7 @@ func (s *Service) control(p *plugin, conn *connection, reply controlReply) bool 
 	}
 	if reply.fatal {
 		// 库的 Close 内置等待上限，读循环仍处理关闭握手。
-		_ = conn.socket.Close(websocket.StatusInvalidFramePayloadData, "invalid MessagePack control")
+		_ = conn.socket.Close(websocket.StatusInvalidFramePayloadData, reply.Message)
 		return false
 	}
 	if reply.Type == "subscribed" {

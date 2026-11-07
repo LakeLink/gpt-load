@@ -47,8 +47,12 @@ func TestCodexHTTPExchangeCompressionFallbackSnapshots(t *testing.T) {
 	response, err := executor.ExecuteStreamCanonical(ctx, "test-credential", CodexCredential{
 		Type: ProviderCodex, AccessToken: "test-access", RefreshToken: "test-refresh", AccountID: "test-account",
 	}, ExecuteRequest{Model: "gpt-5", Format: "openai-response", Payload: []byte(`{"model":"gpt-5","input":"` + strings.Repeat("repeat ", 400) + `"}`),
-		Headers:         http.Header{"X-Source-Values": {"original", "second"}},
-		ObserveExchange: func(fact ExchangeObservation) { facts = append(facts, fact) },
+		Headers: http.Header{"X-Source-Values": {"original", "second"}},
+		ObserveExchange: func(fact ExchangeObservation) {
+			fact.Header = fact.Header.Clone()
+			fact.Body = append([]byte(nil), fact.Body...)
+			facts = append(facts, fact)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

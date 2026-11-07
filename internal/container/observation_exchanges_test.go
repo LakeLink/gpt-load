@@ -22,10 +22,24 @@ import (
 const observationCompleted = "data: " + `{"type":"response.completed","response":{"id":"resp_local","object":"response","status":"completed","model":"gpt-5","output":[{"id":"msg_local","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"local answer","annotations":[]}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}` + "\n\n"
 
 func TestObservationSSEBeforeCompletion(t *testing.T) {
-	for _, outcome := range []string{"success", "error", "incomplete", "canceled"} {
+	for _, outcome := range []string{"success", "error", "incomplete", "canceled", "subscribe during request"} {
 		t.Run(outcome, func(t *testing.T) {
+			lateSubscription := outcome == "subscribe during request"
+			if lateSubscription {
+				outcome = "success"
+			}
+			upstreamStarted, releaseHeaders := make(chan struct{}), make(chan struct{})
+			if !lateSubscription {
+				close(releaseHeaders)
+			}
 			release := make(chan struct{})
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(upstreamStarted)
+				select {
+				case <-releaseHeaders:
+				case <-r.Context().Done():
+					return
+				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.Header()["X-Research-Raw"] = []string{"first", "second"}
 				io.WriteString(w, "data: "+`{"type":"response.output_text.delta","response_id":"resp_local","delta":"local "}`+"\n\n")
@@ -52,8 +66,10 @@ func TestObservationSSEBeforeCompletion(t *testing.T) {
 			fixture := newObservationHost(t, upstream)
 			plugin := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 			defer plugin.CloseNow()
-			fixture.command(t, plugin, "subscribe", "start")
-			readObservation(t, plugin)
+			if !lateSubscription {
+				fixture.command(t, plugin, "subscribe", "start")
+				readObservation(t, plugin)
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			request, _ := http.NewRequestWithContext(ctx, http.MethodPost, fixture.server.URL+"/v1/responses", strings.NewReader(`{"model":"gpt-5","input":"hello","stream":true}`))
@@ -82,13 +98,27 @@ func TestObservationSSEBeforeCompletion(t *testing.T) {
 				}
 				finished <- result{response.Header.Get("X-GPTLoad-Request-ID"), string(body), err}
 			}()
-			requestEvent := readObservation(t, plugin)
-			responseEvent := readObservation(t, plugin)
-			requestData := requestEvent["data"].(map[string]any)
-			responseData := responseEvent["data"].(map[string]any)
-			if requestEvent["type"] != "upstream.request" || responseEvent["type"] != "upstream.response" || requestData["phase"] != "http_exchange" || responseData["phase"] != "sse_initialization" || responseData["stream"] != true || responseData["status_code"] != int64(200) || requestData["attempt_id"] != responseData["attempt_id"] {
-				t.Fatalf("stream observations request=%#v response=%#v", requestEvent, responseEvent)
+			var requestEvent map[string]any
+			if lateSubscription {
+				<-upstreamStarted
+				fixture.command(t, plugin, "subscribe", "start")
+				readObservation(t, plugin)
+				close(releaseHeaders)
+			} else {
+				requestEvent = readObservation(t, plugin)
 			}
+			responseEvent := readObservation(t, plugin)
+			responseData := responseEvent["data"].(map[string]any)
+			if responseEvent["type"] != "upstream.response" || responseData["phase"] != "sse_initialization" || responseData["stream"] != true || responseData["status_code"] != int64(200) {
+				t.Fatalf("stream response=%#v", responseEvent)
+			}
+			if !lateSubscription {
+				requestData := requestEvent["data"].(map[string]any)
+				if requestEvent["type"] != "upstream.request" || requestData["phase"] != "http_exchange" || requestData["attempt_id"] != responseData["attempt_id"] {
+					t.Fatalf("stream request=%#v response=%#v", requestEvent, responseEvent)
+				}
+			}
+
 			select {
 			case result := <-finished:
 				t.Fatalf("stream completed before release: %+v", result)

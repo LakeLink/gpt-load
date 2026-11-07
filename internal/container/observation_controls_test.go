@@ -68,6 +68,10 @@ func TestObservationAuthenticationAndControls(t *testing.T) {
 	} {
 		fixture.command(t, conn, test.kind, test.id)
 		reply := readObservation(t, conn)
+		messages := map[string]string{"invalid_message": "type 和 command_id 为必填字段", "unknown_command": "未知控制命令"}
+		if test.code != "" && reply["message"] != messages[test.code] {
+			t.Fatalf("localized control=%#v", reply)
+		}
 		if reply["type"] != test.want || test.code != "" && reply["code"] != test.code || test.id != "" && reply["command_id"] != test.id {
 			t.Fatalf("control=%+v reply=%#v", test, reply)
 		}

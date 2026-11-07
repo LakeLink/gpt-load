@@ -2,6 +2,11 @@ package locales
 
 // MessagesEnUS contains English (US) control-plane translations.
 var MessagesEnUS = map[string]string{
+	"observation.binary_control_required":        "Binary MessagePack control required",
+	"observation.invalid_control":                "Invalid MessagePack control",
+	"observation.control_fields_required":        "type and command_id are required",
+	"observation.unknown_command":                "Unknown control command",
+	"observation.shutting_down":                  "Host is shutting down",
 	"demo.restricted":                            "This action is unavailable in the demo. Upstream requests, authorization, and network probes are disabled.",
 	"access_key.custom_invalid":                  "Use up to 256 visible ASCII characters without spaces or control characters.",
 	"access_key.admin_conflict":                  "The administrator key cannot be used as an access key.",
