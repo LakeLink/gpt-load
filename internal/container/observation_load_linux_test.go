@@ -31,8 +31,23 @@ func TestObservationLoadComparison(t *testing.T) {
 	defer logrus.SetOutput(previous)
 	upstream := observationLocalUpstream()
 	defer upstream.Close()
-	const requests, workers = 600, 8
-	payload := `{"model":"gpt-5","input":"` + strings.Repeat("x", 16<<10) + `","stream":true}`
+	requests, workers, inputBytes := 600, 8, 16<<10
+	profile := os.Getenv("OBSERVATION_LOAD_PROFILE")
+	switch profile {
+	case "", "standard":
+	case "large-body":
+		requests, workers, inputBytes = 100, 4, 1200000
+	case "large-headers":
+		requests, workers = 100, 4
+		original := upstream.Config.Handler
+		upstream.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Large-Observation", strings.Repeat("h", 1200000))
+			original.ServeHTTP(w, r)
+		})
+	default:
+		t.Fatalf("unknown observation load profile %q", profile)
+	}
+	payload := `{"model":"gpt-5","input":"` + strings.Repeat("x", inputBytes) + `","stream":true}`
 	for _, mode := range []string{"disabled", "no-subscription", "online", "offline-full", "slow-consumer"} {
 		t.Run(mode, func(t *testing.T) {
 			fixture := newObservationHost(t, upstream, func(cfg *config.Config) {
@@ -208,7 +223,7 @@ func TestObservationLoadComparison(t *testing.T) {
 			cpuMicros := func(r syscall.Rusage) int64 {
 				return r.Utime.Sec*1000000 + r.Utime.Usec + r.Stime.Sec*1000000 + r.Stime.Usec
 			}
-			t.Logf("MEASURE mode=%s requests=%d workers=%d req_s=%.1f elapsed_ms=%d latency_p50_us=%d latency_p95_us=%d first_p50_us=%d first_p95_us=%d cpu_us_req=%.1f alloc_B_req=%d allocs_req=%d live_heap_B=%d heap_delta_B=%d peak_heap_B=%d goroutines_base=%d goroutines_peak=%d retained_events=%d retained_encoded_B=%d received_encoded_B=%d", mode, requests, workers, float64(requests)/elapsed.Seconds(), elapsed.Milliseconds(), latencies[requests/2].Microseconds(), latencies[requests*95/100].Microseconds(), firstTimes[requests/2].Microseconds(), firstTimes[requests*95/100].Microseconds(), float64(cpuMicros(cpuAfter)-cpuMicros(cpuBefore))/requests, (after.TotalAlloc-before.TotalAlloc)/requests, (after.Mallocs-before.Mallocs)/requests, retained.HeapAlloc, int64(retained.HeapAlloc)-int64(before.HeapAlloc), peakHeap.Load(), baselineGoroutines, peakGoroutines.Load(), retainedEvents, retainedBytes, received.Load())
+			t.Logf("MEASURE profile=%s mode=%s requests=%d workers=%d req_s=%.1f elapsed_ms=%d latency_p50_us=%d latency_p95_us=%d first_p50_us=%d first_p95_us=%d cpu_us_req=%.1f alloc_B_req=%d allocs_req=%d live_heap_B=%d heap_delta_B=%d peak_heap_B=%d goroutines_base=%d goroutines_peak=%d retained_events=%d retained_encoded_B=%d received_encoded_B=%d", profile, mode, requests, workers, float64(requests)/elapsed.Seconds(), elapsed.Milliseconds(), latencies[requests/2].Microseconds(), latencies[requests*95/100].Microseconds(), firstTimes[requests/2].Microseconds(), firstTimes[requests*95/100].Microseconds(), float64(cpuMicros(cpuAfter)-cpuMicros(cpuBefore))/float64(requests), (after.TotalAlloc-before.TotalAlloc)/uint64(requests), (after.Mallocs-before.Mallocs)/uint64(requests), retained.HeapAlloc, int64(retained.HeapAlloc)-int64(before.HeapAlloc), peakHeap.Load(), baselineGoroutines, peakGoroutines.Load(), retainedEvents, retainedBytes, received.Load())
 		})
 	}
 }
