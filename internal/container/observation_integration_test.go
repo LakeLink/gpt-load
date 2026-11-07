@@ -264,6 +264,11 @@ func (f *observationHost) requestStatus(t *testing.T, wantStatus int, wantBody s
 	if response.StatusCode != wantStatus || !strings.Contains(string(body), wantBody) {
 		t.Fatalf("response=%d %s", response.StatusCode, body)
 	}
+	// 客户端读完响应后，handler 仍可能正在发布 RequestEvent。
+	if err := f.lifecycle.WaitData(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
 	return response.Header.Get("X-GPTLoad-Request-ID")
 }
 func (f *observationHost) command(t *testing.T, conn *websocket.Conn, kind, id string) {
