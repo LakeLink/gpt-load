@@ -90,7 +90,20 @@ type requestRecorder struct {
 	emitted              bool
 	requestBody          []byte
 
-	pendingRetry int
+	pendingAttemptID          string
+	pendingCredentialVersion  uint64
+	pendingIdentityGeneration uint64
+	pendingRetry              int
+}
+
+// freezeNextAttemptIdentity 保留实际派发使用的凭据和尝试身份。
+func (recorder *requestRecorder) freezeNextAttemptIdentity(id string, version, generation uint64) {
+	if recorder == nil {
+		return
+	}
+	recorder.pendingAttemptID = id
+	recorder.pendingCredentialVersion = version
+	recorder.pendingIdentityGeneration = generation
 }
 
 func (recorder *requestRecorder) freezeNextAttemptPricing(frozen frozenAttemptPricing) {
@@ -416,37 +429,41 @@ func (recorder *requestRecorder) appendDecisionAttempt(
 		duration = 0
 	}
 	attempt := telemetry.Attempt{
-		Sequence:          len(recorder.attempts) + 1,
-		CompletedAt:       completedAt,
-		GroupID:           selection.GroupID,
-		GroupName:         selection.Group.Name,
-		ChannelID:         selection.ChannelID,
-		CredentialID:      selection.CredentialID,
-		Operation:         recorder.operation,
-		RouteMode:         selection.RouteMode,
-		UpstreamModel:     optionalModelValue(selection.UpstreamModelID),
-		UpstreamRequestID: result.UpstreamRequestID,
-		DispatchState:     result.DispatchState,
-		ResponseStarted:   result.ResponseStarted,
-		UpstreamProtocol:  result.UpstreamProtocol,
-		Reasoning:         result.AppliedReasoning.Clone(),
-		StatusCode:        result.StatusCode,
-		DurationMs:        duration.Milliseconds(),
-		FailureCategory:   telemetryFailureCategory(decision.Category),
-		FailureOrigin:     decision.Origin,
-		FailureScope:      decision.Scope,
-		RetryDirective:    telemetry.RetryDirective(decision.Retry),
-		Effect:            telemetry.Effect(decision.Effect),
-		CooldownUntil:     decision.CooldownUntil,
-		RuleID:            string(decision.RuleID),
-		Action:            telemetryAction(decision),
-		ErrorCode:         errorCode,
-		ErrorSummary:      errorSummary,
-		Committed:         result.Committed,
+		AttemptID:          recorder.pendingAttemptID,
+		CredentialVersion:  recorder.pendingCredentialVersion,
+		IdentityGeneration: recorder.pendingIdentityGeneration,
+		Sequence:           len(recorder.attempts) + 1,
+		CompletedAt:        completedAt,
+		GroupID:            selection.GroupID,
+		GroupName:          selection.Group.Name,
+		ChannelID:          selection.ChannelID,
+		CredentialID:       selection.CredentialID,
+		Operation:          recorder.operation,
+		RouteMode:          selection.RouteMode,
+		UpstreamModel:      optionalModelValue(selection.UpstreamModelID),
+		UpstreamRequestID:  result.UpstreamRequestID,
+		DispatchState:      result.DispatchState,
+		ResponseStarted:    result.ResponseStarted,
+		UpstreamProtocol:   result.UpstreamProtocol,
+		Reasoning:          result.AppliedReasoning.Clone(),
+		StatusCode:         result.StatusCode,
+		DurationMs:         duration.Milliseconds(),
+		FailureCategory:    telemetryFailureCategory(decision.Category),
+		FailureOrigin:      decision.Origin,
+		FailureScope:       decision.Scope,
+		RetryDirective:     telemetry.RetryDirective(decision.Retry),
+		Effect:             telemetry.Effect(decision.Effect),
+		CooldownUntil:      decision.CooldownUntil,
+		RuleID:             string(decision.RuleID),
+		Action:             telemetryAction(decision),
+		ErrorCode:          errorCode,
+		ErrorSummary:       errorSummary,
+		Committed:          result.Committed,
 	}
 	if attempt.ErrorCode != "" && attempt.ErrorSummary == "" {
 		attempt.ErrorSummary = fixedErrorSummary(attempt.ErrorCode)
 	}
+	recorder.freezeNextAttemptIdentity("", 0, 0)
 	recorder.attempts = append(recorder.attempts, attempt)
 	recorder.attemptUsage = append(recorder.attemptUsage, result.Usage)
 	frozen := frozenAttemptPricing{}

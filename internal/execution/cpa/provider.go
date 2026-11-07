@@ -107,6 +107,7 @@ func annotateProviderErrorEvidence(evidence *execution.ErrorEvidence, err error)
 }
 
 type providerRequest struct {
+	ObserveExchange   func(execution.UpstreamExchange)
 	AttemptID         string
 	Model             string
 	Payload           []byte

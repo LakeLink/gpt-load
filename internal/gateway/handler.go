@@ -1475,6 +1475,7 @@ func (handler *Handler) executeAttempts(
 				),
 			)
 		}
+		recorder.freezeNextAttemptIdentity(input.AttemptID, input.Credential.Version, input.Credential.IdentityGeneration)
 		attemptStarted := recorder.beforeForward()
 		var result UpstreamResult
 		if stream {

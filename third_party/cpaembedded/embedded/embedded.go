@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
@@ -143,6 +144,7 @@ type HTTPExecutor interface {
 }
 
 type ExecuteRequest struct {
+	ObserveExchange   func(ExchangeObservation)
 	AttemptID         string
 	Model             string
 	Payload           []byte
@@ -521,6 +523,7 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
 	observation := newExecutionObservation(request)
+	observation.stream = true
 	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, &request)
 	response, err := e.inner.ExecuteStream(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
@@ -845,10 +848,24 @@ type noRedirectRoundTripper struct {
 }
 
 func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	var sequence uint64
+	if t.observation != nil && t.observation.exchangeObserver != nil {
+		sequence = t.observation.exchangeSequence.Add(1)
+		t.observation.exchangeObserver(ExchangeObservation{Kind: "request", Sequence: sequence, Phase: "http_exchange",
+			ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: req.Header.Clone()})
+	}
 	if t.observation != nil {
 		t.observation.observe(req)
 	}
 	resp, err := t.base.RoundTrip(req)
+	if resp != nil && t.observation != nil && t.observation.exchangeObserver != nil {
+		phase := "http_exchange"
+		if err == nil && t.observation.stream && resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.Body != nil {
+			phase = "sse_initialization"
+		}
+		t.observation.exchangeObserver(ExchangeObservation{Kind: "response", Sequence: sequence, Phase: phase,
+			ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: resp.Header.Clone(), StatusCode: resp.StatusCode})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -868,6 +885,9 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 }
 
 type executionObservation struct {
+	exchangeObserver    func(ExchangeObservation)
+	exchangeSequence    atomic.Uint64
+	stream              bool
 	capture             bool
 	captureRequestPath  bool
 	provider            string
@@ -883,6 +903,7 @@ type executionObservation struct {
 func newExecutionObservation(request ExecuteRequest) *executionObservation {
 	observation := newProviderExecutionObservation(request, ProviderCodex)
 	observation.captureRequestPath = true
+	observation.exchangeObserver = request.ObserveExchange
 	return observation
 }
 

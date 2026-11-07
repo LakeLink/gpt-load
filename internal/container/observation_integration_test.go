@@ -38,6 +38,7 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls <- r.Header.Clone()
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header()["X-Research-Raw"] = []string{"first", "second"}
 		io.WriteString(w, "data: "+`{"type":"response.completed","response":{"id":"resp_local","object":"response","status":"completed","model":"gpt-5","output":[{"id":"msg_local","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"local answer","annotations":[]}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}`+"\n\n")
 	}))
 	defer upstream.Close()
@@ -57,9 +58,25 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 	}
 	plugin.SetReadLimit(int64(subscribed["max_event_bytes"].(int64)))
 	requestID := fixture.request(t)
+	requestEvent := readObservation(t, plugin)
+	responseEvent := readObservation(t, plugin)
+	for index, process := range []map[string]any{requestEvent, responseEvent} {
+		data := process["data"].(map[string]any)
+		wantType := []string{"upstream.request", "upstream.response"}[index]
+		if process["type"] != wantType || data["request_id"] != requestID || data["attempt_id"] != requestID+":1" || data["attempt_sequence"] != int64(1) || data["exchange_sequence"] != int64(1) || data["phase"] != "http_exchange" || data["stream"] != false || data["channel_id"] != "codex" || data["model"] != "gpt-5" || data["protocol"] != "openai-responses" || data["credential_id"] != int64(1) || data["credential_version"] != int64(1) || data["identity_generation"].(int64) == 0 {
+			t.Fatalf("process event = %#v", process)
+		}
+		if _, hasBody := data["body"]; hasBody {
+			t.Fatal("transport hook has no available body")
+		}
+	}
+	responseData := responseEvent["data"].(map[string]any)
+	if responseData["status_code"] != int64(200) || !reflect.DeepEqual(responseData["headers"].(map[string]any)["X-Research-Raw"], []any{"first", "second"}) {
+		t.Fatalf("raw response = %#v", responseData)
+	}
 	event := readObservation(t, plugin)
 	data := event["data"].(map[string]any)
-	if event["type"] != "request.finished" || event["seq"] != int64(1) || event["boot_id"] != subscribed["boot_id"] || event["observed_at"].(int64) == 0 || data["request_id"] != requestID || data["status"] != "success" || data["status_code"] != int64(200) {
+	if event["type"] != "request.finished" || event["seq"] != int64(3) || event["boot_id"] != subscribed["boot_id"] || event["observed_at"].(int64) == 0 || data["request_id"] != requestID || data["status"] != "success" || data["status_code"] != int64(200) {
 		t.Fatalf("event = %#v", event)
 	}
 	if !reflect.DeepEqual(data["request_body"], []byte(`{"model":"gpt-5","input":"hello"}`)) {
@@ -85,6 +102,10 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 			t.Fatalf("v1 usage field %s=%#v, actual=%#v", field, sampleUsage[field], actualUsage[field])
 		}
 	}
+	attempt := data["attempts"].([]any)[0].(map[string]any)
+	if attempt["attempt_id"] != requestID+":1" || attempt["credential_version"] != int64(1) || attempt["identity_generation"] != requestEvent["data"].(map[string]any)["identity_generation"] {
+		t.Fatalf("final identity = %#v", attempt)
+	}
 	if len(data["attempts"].([]any)) != 1 {
 		t.Fatalf("request timing/attempts = %#v", data)
 	}
@@ -108,6 +129,7 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 }
 
 type observationHost struct {
+	deps   *dig.Container
 	server *httptest.Server
 	db     *gorm.DB
 	logs   *requestlog.Service
@@ -131,7 +153,7 @@ func newObservationHost(t *testing.T, upstream *httptest.Server) *observationHos
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture := &observationHost{}
+	fixture := &observationHost{deps: deps}
 	err = deps.Invoke(func(engine *gin.Engine, db *gorm.DB, keys encryption.Service, registry *state.CredentialRegistry, manager *state.Manager, logs *requestlog.Service) {
 		if err := storage.AutoMigrate(db); err != nil {
 			t.Fatal(err)
@@ -286,6 +308,12 @@ func TestObservationCodexFailureAndPublicationIsolation(t *testing.T) {
 			requestID := fixture.requestStatus(t, http.StatusBadRequest, "local rejection")
 			var event map[string]any
 			if !test.smallQueue {
+				requestEvent := readObservation(t, conn)
+				responseEvent := readObservation(t, conn)
+				responseData := responseEvent["data"].(map[string]any)
+				if requestEvent["type"] != "upstream.request" || responseEvent["type"] != "upstream.response" || responseData["status_code"] != int64(400) || responseData["phase"] != "http_exchange" {
+					t.Fatalf("failed exchange = %#v", responseEvent)
+				}
 				event = readObservation(t, conn)
 			}
 			fixture.command(t, conn, "unsubscribe", "stop")

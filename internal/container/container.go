@@ -211,7 +211,11 @@ func BuildContainer(configure ...func(*dig.Container) error) (*dig.Container, er
 		},
 		newSubscriptionRuntime,
 		subscription.NewCredentialManager,
-		cpaexecutor.NewAdapter,
+		func(credentials *subscription.CredentialManager, channels *channel.Registry, observations *observation.Service) *cpaexecutor.Adapter {
+			adapter := cpaexecutor.NewAdapter(credentials, channels)
+			adapter.SetExchangeObserver(observations.ObserveExchange)
+			return adapter
+		},
 		subscriptionproviders.NewModelCatalogUpdater,
 		newProviderAdapterRegistry,
 		func(registry *provideradapter.Registry) execution.Executor { return registry },
