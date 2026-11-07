@@ -27,26 +27,36 @@ type plugin struct {
 	subscription *subscription
 	connection   *connection
 }
+type controlReply struct {
+	Control
+	subscription *subscription
+}
+
 type connection struct {
 	socket     *websocket.Conn
 	ctx        context.Context
 	cancel     context.CancelFunc
-	commands   chan Control
+	commands   chan controlReply
 	wake       chan struct{}
 	done       chan struct{}
+	exited     chan struct{}
 	delivering bool
 }
 
 // Service 按插件身份保留有界采集队列，连接 writer 独立发送。
 type Service struct {
-	mu      sync.Mutex
-	cfg     config.ObservationConfig
-	bootID  string
-	plugins map[string]*plugin
+	mu          sync.Mutex
+	publishMu   sync.Mutex
+	closing     bool
+	stopped     bool
+	connections map[*connection]struct{}
+	cfg         config.ObservationConfig
+	bootID      string
+	plugins     map[string]*plugin
 }
 
 func New(cfg *config.Config) *Service {
-	service := &Service{cfg: cfg.Observation, bootID: uuid.NewString(), plugins: make(map[string]*plugin)}
+	service := &Service{cfg: cfg.Observation, bootID: uuid.NewString(), plugins: make(map[string]*plugin), connections: make(map[*connection]struct{})}
 	for _, entry := range cfg.Observation.Plugins {
 		service.plugins[entry.ID] = &plugin{token: entry.Token}
 	}
@@ -84,27 +94,43 @@ func (s *Service) handle(c *gin.Context) {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		c.AbortWithStatus(http.StatusServiceUnavailable)
+		return
+	}
+	s.mu.Unlock()
 	socket, err := websocket.Accept(upgradeWriter{c.Writer}, c.Request, &websocket.AcceptOptions{Subprotocols: []string{Subprotocol}})
 	if err != nil {
 		return
 	}
 	socket.SetReadLimit(ControlReadLimit)
 	ctx, cancel := context.WithCancel(context.Background())
-	conn := &connection{socket: socket, ctx: ctx, cancel: cancel, commands: make(chan Control), wake: make(chan struct{}, 1), done: make(chan struct{})}
+	conn := &connection{socket: socket, ctx: ctx, cancel: cancel, commands: make(chan controlReply, 1), wake: make(chan struct{}, 1), done: make(chan struct{}), exited: make(chan struct{})}
 	p := s.plugins[c.Param("plugin_id")]
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		cancel()
+		_ = socket.CloseNow()
+		return
+	}
 	old := p.connection
 	p.connection = conn
+	s.connections[conn] = struct{}{}
 	s.mu.Unlock()
 	if old != nil {
 		old.cancel()
 		_ = old.socket.CloseNow()
 	}
 	defer func() {
+		defer close(conn.exited)
 		cancel()
 		_ = socket.CloseNow()
 		<-conn.done
 		s.mu.Lock()
+		delete(s.connections, conn)
 		if p.connection == conn {
 			p.connection = nil
 		}
@@ -129,8 +155,12 @@ func (s *Service) handle(c *gin.Context) {
 		} else {
 			reply = Control{Type: command.Type, CommandID: command.CommandID}
 		}
+		prepared, current := s.prepare(p, conn, reply)
+		if !current {
+			return
+		}
 		select {
-		case conn.commands <- reply:
+		case conn.commands <- prepared:
 		case <-ctx.Done():
 			return
 		}
@@ -143,6 +173,18 @@ func (s *Service) writeLoop(p *plugin, conn *connection) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
+		select {
+		case <-conn.ctx.Done():
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(conn.ctx, s.writeTimeout())
+			err := conn.socket.Ping(ctx)
+			cancel()
+			if err != nil {
+				return
+			}
+		default:
+		}
 		// 控制消息优先，并与事件由同一个 writer 串行发送。
 		select {
 		case reply := <-conn.commands:
@@ -162,8 +204,9 @@ func (s *Service) writeLoop(p *plugin, conn *connection) {
 			sub.queue = sub.queue[1:]
 			sub.bytes -= len(data)
 		}
+		drained := s.stopped && data == nil
 		s.mu.Unlock()
-		if !current {
+		if !current || drained {
 			return
 		}
 		if data != nil {
@@ -191,46 +234,59 @@ func (s *Service) writeLoop(p *plugin, conn *connection) {
 	}
 }
 
-func (s *Service) control(p *plugin, conn *connection, reply Control) bool {
+// prepare 在读循环中建立取消栅栏；确认仍由 writer 排在在途写入之后。
+func (s *Service) prepare(p *plugin, conn *connection, reply Control) (controlReply, bool) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if p.connection != conn {
-		s.mu.Unlock()
-		return false
+		return controlReply{}, false
 	}
+	result := controlReply{Control: reply}
 	switch reply.Type {
 	case "subscribe":
+		if s.closing {
+			result.Control = Control{Type: "error", CommandID: reply.CommandID, Code: "shutting_down", Message: "host is shutting down"}
+			break
+		}
 		if p.subscription == nil {
 			p.subscription = &subscription{}
 		}
-		reply.Type = "subscribed"
-		reply.BootID = s.bootID
-		reply.MaxEventBytes = s.cfg.QueueMaxBytes
+		result.subscription = p.subscription
+		result.Type = "subscribed"
+		result.BootID = s.bootID
+		result.MaxEventBytes = s.cfg.QueueMaxBytes
 	case "unsubscribe":
+		if p.subscription != nil {
+			p.subscription.queue = nil
+			p.subscription.bytes = 0
+		}
 		p.subscription = nil
 		conn.delivering = false
-		reply.Type = "unsubscribed"
-		reply.BootID = s.bootID
-	case "error":
-	default:
-		reply.Type = "error"
-		reply.Code = "unknown_command"
-		reply.Message = "unknown control command"
+		result.Type = "unsubscribed"
+		result.BootID = s.bootID
 	}
+	return result, true
+}
+
+func (s *Service) control(p *plugin, conn *connection, reply controlReply) bool {
+	s.mu.Lock()
+	current := p.connection == conn
 	s.mu.Unlock()
-	data, err := encode(reply)
-	if err != nil {
+	if !current {
 		return false
 	}
-	if !s.write(conn, data) {
+	data, err := encode(reply.Control)
+	if err != nil || !s.write(conn, data) {
 		return false
 	}
 	if reply.fatal {
+		// 库的 Close 内置等待上限，读循环仍处理关闭握手。
 		_ = conn.socket.Close(websocket.StatusInvalidFramePayloadData, "invalid MessagePack control")
 		return false
 	}
 	if reply.Type == "subscribed" {
 		s.mu.Lock()
-		if p.connection == conn {
+		if p.connection == conn && p.subscription == reply.subscription {
 			conn.delivering = true
 		}
 		s.mu.Unlock()
@@ -246,45 +302,77 @@ func (s *Service) write(conn *connection, data []byte) bool {
 	return conn.socket.Write(ctx, websocket.MessageBinary, data) == nil
 }
 
-// Publish 仅在存在订阅时构造快照；队列内记录均为独立编码数据。
-// yagni: 发布持有进程级锁，保证序号分配与入队顺序一致。
+// Publish 在订阅代次内构造快照，取消可在构造和编码期间推进。
 func (s *Service) Publish(kind string, observedAt time.Time, snapshot func() any) {
+	type target struct {
+		id     string
+		plugin *plugin
+		sub    *subscription
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	var data any
-	built := false
-	for id, p := range s.plugins {
-		sub := p.subscription
-		if sub == nil {
+	var targets []target
+	if !s.stopped {
+		for id, p := range s.plugins {
+			if p.subscription != nil {
+				targets = append(targets, target{id, p, p.subscription})
+			}
+		}
+	}
+	s.mu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	// 等待发布顺序期间也可能发生取消或接替订阅。
+	s.mu.Lock()
+	active := false
+	if !s.stopped {
+		for _, target := range targets {
+			active = active || target.plugin.subscription == target.sub
+		}
+	}
+	s.mu.Unlock()
+	if !active {
+		return
+	}
+	data := snapshot()
+	for _, target := range targets {
+		s.mu.Lock()
+		p, sub := target.plugin, target.sub
+		if s.stopped || p.subscription != sub {
+			s.mu.Unlock()
 			continue
 		}
-		if !built {
-			data = snapshot()
-			built = true
-		}
 		p.seq++
-		encoded, err := encode(Event{Type: kind, BootID: s.bootID, Seq: p.seq, ObservedAt: observedAt.UTC().UnixMilli(), Data: data})
+		seq := p.seq
+		s.mu.Unlock()
+		encoded, err := encode(Event{Type: kind, BootID: s.bootID, Seq: seq, ObservedAt: observedAt.UTC().UnixMilli(), Data: data})
 		if err != nil || len(encoded) > s.cfg.QueueMaxBytes {
 			reason := "encoded_record_exceeds_queue_budget"
 			if err != nil {
 				reason = "messagepack_encoding_failed"
 			}
-			logrus.WithFields(logrus.Fields{"event": "observation.publish_failed", "plugin_id": id, "type": kind, "seq": p.seq, "bytes": len(encoded), "reason": reason}).Warn("observation publication failed")
+			logrus.WithFields(logrus.Fields{"event": "observation.publish_failed", "plugin_id": target.id, "type": kind, "seq": seq, "bytes": len(encoded), "reason": reason}).Warn("observation publication failed")
 			continue
 		}
-		for len(sub.queue) > 0 && (len(sub.queue) >= s.cfg.QueueMaxEvents || sub.bytes+len(encoded) > s.cfg.QueueMaxBytes) {
-			sub.bytes -= len(sub.queue[0])
-			sub.queue[0] = nil
-			sub.queue = sub.queue[1:]
-		}
-		sub.queue = append(sub.queue, encoded)
-		sub.bytes += len(encoded)
-		if p.connection != nil {
-			select {
-			case p.connection.wake <- struct{}{}:
-			default:
+		s.mu.Lock()
+		if !s.stopped && p.subscription == sub {
+			for len(sub.queue) > 0 && (len(sub.queue) >= s.cfg.QueueMaxEvents || sub.bytes+len(encoded) > s.cfg.QueueMaxBytes) {
+				sub.bytes -= len(sub.queue[0])
+				sub.queue[0] = nil
+				sub.queue = sub.queue[1:]
+			}
+			sub.queue = append(sub.queue, encoded)
+			sub.bytes += len(encoded)
+			if p.connection != nil {
+				select {
+				case p.connection.wake <- struct{}{}:
+				default:
+				}
 			}
 		}
+		s.mu.Unlock()
 	}
 }
 
@@ -296,4 +384,45 @@ func (w upgradeWriter) WriteHeader(status int) {
 		status = http.StatusBadRequest
 	}
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// BeginShutdown 关闭接入和新订阅，业务排空期间仍接收完成事实。
+func (s *Service) BeginShutdown() {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+}
+
+// Shutdown 停止生产并在调用方的全局截止时间内发送积压、释放连接。
+func (s *Service) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	s.closing, s.stopped = true, true
+	connections := make([]*connection, 0, len(s.connections))
+	for conn := range s.connections {
+		connections = append(connections, conn)
+		select {
+		case conn.wake <- struct{}{}:
+		default:
+		}
+	}
+	s.mu.Unlock()
+	stop := context.AfterFunc(ctx, func() {
+		for _, conn := range connections {
+			conn.cancel()
+		}
+	})
+	defer stop()
+	for _, conn := range connections {
+		<-conn.exited
+	}
+	s.mu.Lock()
+	for _, p := range s.plugins {
+		if p.subscription != nil {
+			p.subscription.queue = nil
+			p.subscription.bytes = 0
+		}
+		p.subscription = nil
+	}
+	s.mu.Unlock()
+	return ctx.Err()
 }

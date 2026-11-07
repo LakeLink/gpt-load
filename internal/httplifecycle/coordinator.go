@@ -20,6 +20,7 @@ type Coordinator struct {
 	closing  bool
 	active   int
 	zero     chan struct{}
+	dataZero chan struct{}
 	dataStop map[*http.Request]context.CancelCauseFunc
 	allStop  map[*http.Request]context.CancelCauseFunc
 }
@@ -29,6 +30,7 @@ func NewCoordinator() *Coordinator {
 	close(zero)
 	return &Coordinator{
 		zero:     zero,
+		dataZero: zero,
 		dataStop: make(map[*http.Request]context.CancelCauseFunc),
 		allStop:  make(map[*http.Request]context.CancelCauseFunc),
 	}
@@ -99,6 +101,9 @@ func (coordinator *Coordinator) BindData(request *http.Request) (
 		return ctx, func() {}, false
 	}
 	coordinator.addActiveLocked()
+	if len(coordinator.dataStop) == 0 {
+		coordinator.dataZero = make(chan struct{})
+	}
 	coordinator.dataStop[request] = cancel
 	coordinator.mu.Unlock()
 	stopBodyClose := context.AfterFunc(ctx, func() {
@@ -114,6 +119,9 @@ func (coordinator *Coordinator) BindData(request *http.Request) (
 			cancel(nil)
 			coordinator.mu.Lock()
 			delete(coordinator.dataStop, request)
+			if len(coordinator.dataStop) == 0 {
+				close(coordinator.dataZero)
+			}
 			coordinator.leaveLocked()
 			coordinator.mu.Unlock()
 		})
@@ -183,5 +191,21 @@ func (coordinator *Coordinator) leaveLocked() {
 	coordinator.active--
 	if coordinator.active == 0 {
 		close(coordinator.zero)
+	}
+}
+
+// WaitData 等待数据请求（包含已升级连接）完成，观测 writer 另行排空。
+func (coordinator *Coordinator) WaitData(ctx context.Context) error {
+	if coordinator == nil {
+		return nil
+	}
+	coordinator.mu.Lock()
+	zero := coordinator.dataZero
+	coordinator.mu.Unlock()
+	select {
+	case <-zero:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

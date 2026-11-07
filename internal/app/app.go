@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gpt-load/internal/httplifecycle"
+	"gpt-load/internal/observation"
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/i18n"
 	"gpt-load/internal/platform/utils"
@@ -38,6 +39,7 @@ type App struct {
 	requestLogs       RequestLogRuntime
 	executionRuntime  ExecutionRuntime
 	liveSessions      LiveSessionRuntime
+	observations      *observation.Service
 	listen            func(network, address string) (net.Listener, error)
 
 	mu            sync.Mutex
@@ -100,8 +102,9 @@ type AppParams struct {
 	Lifecycle         *httplifecycle.Coordinator `optional:"true"`
 	ControlRuntime    ControlRuntime
 	RequestLogs       RequestLogRuntime
-	ExecutionRuntime  ExecutionRuntime   `optional:"true"`
-	LiveSessions      LiveSessionRuntime `optional:"true"`
+	ExecutionRuntime  ExecutionRuntime     `optional:"true"`
+	LiveSessions      LiveSessionRuntime   `optional:"true"`
+	Observations      *observation.Service `optional:"true"`
 }
 
 // NewEngine creates the process HTTP engine and global middleware.
@@ -152,6 +155,7 @@ func NewApp(params AppParams) *App {
 		requestLogs:       params.RequestLogs,
 		executionRuntime:  params.ExecutionRuntime,
 		liveSessions:      params.LiveSessions,
+		observations:      params.Observations,
 		listen:            net.Listen,
 		serveErrors:       make(chan error, 1),
 	}
@@ -296,6 +300,9 @@ func (a *App) Stop(ctx context.Context) error {
 	a.mu.Unlock()
 
 	var errs []error
+	if a.observations != nil {
+		a.observations.BeginShutdown()
+	}
 	if lifecycle != nil {
 		lifecycle.BeginShutdown()
 		logrus.WithField("event", "shutdown.http_requests_cancel").Info("active HTTP requests canceled")
@@ -342,6 +349,14 @@ func (a *App) Stop(ctx context.Context) error {
 				"event":   "shutdown.control_runtime_stop",
 				"outcome": "forced",
 			}).Warn("control runtime did not drain before shutdown deadline")
+		}
+	}
+	if a.observations != nil {
+		if err := lifecycle.WaitData(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("wait for data handlers: %w", err))
+		}
+		if err := a.observations.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop observations: %w", err))
 		}
 	}
 	if lifecycle != nil {
