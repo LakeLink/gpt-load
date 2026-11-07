@@ -56,7 +56,7 @@ func (e *CodexHTTPExecutor) executeSearchCanonical(
 	req.GetBody = nil
 	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
-	execCtx := e.executionContext(ctx, auth, nil, request.ProxyFromEnvironment, &request)
+	execCtx := e.executionContext(ctx, auth, newExecutionObservation(request), request.ProxyFromEnvironment, &request)
 	resp, err := e.inner.HttpRequest(execCtx, authWithoutProxyURL(auth), req)
 	if err != nil {
 		return ExecuteResponse{}, err

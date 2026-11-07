@@ -45,9 +45,10 @@ var subscriptionResponseHeaderNames = [...]string{
 }
 
 type Adapter struct {
-	credentials credentialPreparer
-	channels    *channel.Registry
-	providers   map[channel.ProviderKind]providerBridge
+	credentials     credentialPreparer
+	channels        *channel.Registry
+	providers       map[channel.ProviderKind]providerBridge
+	observeExchange func(execution.AttemptSpec, bool, execution.UpstreamExchange)
 }
 
 type credentialPreparer interface {
@@ -90,6 +91,18 @@ func NewAdapter(credentials *subscription.CredentialManager, channels *channel.R
 			newDevinProviderBridge(),
 		),
 	}
+}
+
+// SetExchangeObserver 安装执行事实出口；在开始接收请求前调用。
+func (a *Adapter) SetExchangeObserver(observer func(execution.AttemptSpec, bool, execution.UpstreamExchange)) {
+	a.observeExchange = observer
+}
+
+func (a *Adapter) exchangeObserver(spec execution.AttemptSpec, stream bool) func(execution.UpstreamExchange) {
+	if a.observeExchange == nil || spec.ChannelID != string(channel.Codex) {
+		return nil
+	}
+	return func(fact execution.UpstreamExchange) { a.observeExchange(spec, stream, fact) }
 }
 
 // ValidateRouteCapability delegates the implementation bound to ProviderKind.
@@ -146,6 +159,7 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 			err,
 		)
 	}
+	request.ObserveExchange = a.exchangeObserver(spec, false)
 	if validator, ok := provider.(providerRequestValidator); ok {
 		if err := validator.ValidateRequest(request); err != nil {
 			return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: requestValidationEvidence(err)}
@@ -336,6 +350,7 @@ func (a *Adapter) ExecuteStream(
 			"unsupported_subscription_input",
 		)
 	}
+	request.ObserveExchange = a.exchangeObserver(spec, true)
 	if validator, ok := provider.(providerRequestValidator); ok {
 		if err := validator.ValidateRequest(request); err != nil {
 			return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: requestValidationEvidence(err)}

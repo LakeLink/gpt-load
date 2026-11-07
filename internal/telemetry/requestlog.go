@@ -84,34 +84,37 @@ const (
 )
 
 type Attempt struct {
-	Sequence          int
-	CompletedAt       time.Time
-	GroupID           uint
-	GroupName         string
-	ChannelID         channel.ID
-	CredentialID      uint
-	Operation         execution.Operation
-	RouteMode         channel.RouteMode
-	UpstreamModel     string
-	UpstreamRequestID string
-	DispatchState     execution.DispatchState
-	ResponseStarted   bool
-	UpstreamProtocol  protocol.Protocol
-	Reasoning         reasoning.Config
-	StatusCode        int
-	DurationMs        int64
-	FailureCategory   FailureCategory
-	FailureOrigin     execution.ErrorOrigin
-	FailureScope      execution.ErrorScope
-	RetryDirective    RetryDirective
-	Effect            Effect
-	CooldownUntil     time.Time
-	RuleID            string
-	Action            Action
-	WillRetry         bool
-	ErrorCode         string
-	ErrorSummary      string
-	Committed         bool
+	AttemptID          string
+	CredentialVersion  uint64
+	IdentityGeneration uint64
+	Sequence           int
+	CompletedAt        time.Time
+	GroupID            uint
+	GroupName          string
+	ChannelID          channel.ID
+	CredentialID       uint
+	Operation          execution.Operation
+	RouteMode          channel.RouteMode
+	UpstreamModel      string
+	UpstreamRequestID  string
+	DispatchState      execution.DispatchState
+	ResponseStarted    bool
+	UpstreamProtocol   protocol.Protocol
+	Reasoning          reasoning.Config
+	StatusCode         int
+	DurationMs         int64
+	FailureCategory    FailureCategory
+	FailureOrigin      execution.ErrorOrigin
+	FailureScope       execution.ErrorScope
+	RetryDirective     RetryDirective
+	Effect             Effect
+	CooldownUntil      time.Time
+	RuleID             string
+	Action             Action
+	WillRetry          bool
+	ErrorCode          string
+	ErrorSummary       string
+	Committed          bool
 }
 
 // PricingObservation is the frozen, dependency-neutral quote selected by the

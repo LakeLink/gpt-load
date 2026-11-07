@@ -66,6 +66,11 @@ func finishedData(event telemetry.RequestEvent) map[string]any {
 			"failure_category": a.FailureCategory, "failure_origin": a.FailureOrigin, "failure_scope": a.FailureScope,
 			"retry_directive": a.RetryDirective, "effect": a.Effect, "action": a.Action, "will_retry": a.WillRetry, "committed": a.Committed,
 		}
+		if a.AttemptID != "" {
+			attempt["attempt_id"] = a.AttemptID
+			attempt["credential_version"] = a.CredentialVersion
+			attempt["identity_generation"] = a.IdentityGeneration
+		}
 		if a.UpstreamRequestID != "" {
 			attempt["upstream_request_id"] = a.UpstreamRequestID
 		}

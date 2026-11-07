@@ -6,6 +6,7 @@ require (
 	github.com/andybalholm/brotli v1.2.7
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/klauspost/compress v1.17.4
 	github.com/router-for-me/CLIProxyAPI/v8 v8.0.56-0.20261105035157-585f97deac9a
 	github.com/sirupsen/logrus v1.10.2
 	github.com/tidwall/gjson v1.20.0
@@ -31,7 +32,6 @@ require (
 	github.com/go-playground/validator/v10 v10.20.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

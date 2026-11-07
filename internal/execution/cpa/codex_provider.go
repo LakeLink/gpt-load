@@ -107,6 +107,7 @@ func (bridge *codexProviderBridge) CountTokensLocal(
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
+		ObserveExchange:   codexExchangeObserver(request.ObserveExchange),
 		ConfiguredHeaders: append([]string(nil), request.ConfiguredHeaders...),
 		BaseURL:           request.BaseURL, ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
 	})
@@ -315,6 +316,7 @@ func (bridge *codexProviderBridge) Execute(
 		ContinuityKey: request.ContinuityKey,
 		RequestPath:   request.RequestPath,
 		Headers:       request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
+		ObserveExchange:   codexExchangeObserver(request.ObserveExchange),
 		ConfiguredHeaders: append([]string(nil), request.ConfiguredHeaders...),
 		BaseURL:           request.BaseURL, ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
 	})
@@ -348,6 +350,7 @@ func (bridge *codexProviderBridge) ExecuteStream(
 		ContinuityKey: request.ContinuityKey,
 		RequestPath:   request.RequestPath,
 		Headers:       request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
+		ObserveExchange:   codexExchangeObserver(request.ObserveExchange),
 		ConfiguredHeaders: append([]string(nil), request.ConfiguredHeaders...),
 		BaseURL:           request.BaseURL, ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
 	})
@@ -536,3 +539,14 @@ func codexModelCapacityError(err error) bool {
 
 var _ providerBridge = (*codexProviderBridge)(nil)
 var _ providerLocalTokenCounter = (*codexProviderBridge)(nil)
+
+func codexExchangeObserver(observer func(execution.UpstreamExchange)) func(codex.ExchangeObservation) {
+	if observer == nil {
+		return nil
+	}
+	return func(fact codex.ExchangeObservation) {
+		observer(execution.UpstreamExchange{Kind: fact.Kind, Sequence: fact.Sequence, Phase: fact.Phase,
+			ObservedAt: fact.ObservedAt, Header: fact.Header, StatusCode: fact.StatusCode,
+			Method: fact.Method, URL: fact.URL, Protocol: codexUpstreamProtocol(fact.Path)})
+	}
+}

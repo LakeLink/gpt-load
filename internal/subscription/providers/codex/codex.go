@@ -271,7 +271,11 @@ func normalizeUpstreamError(err error) error {
 }
 
 // ExecuteRequest is the canonical request accepted by the embedded CPA bridge.
+// ExchangeObservation 是传输观察点提供的独立快照。
+type ExchangeObservation = cpaembedded.ExchangeObservation
+
 type ExecuteRequest struct {
+	ObserveExchange      func(ExchangeObservation)
 	Model                string
 	Payload              []byte
 	Format               string
@@ -427,6 +431,7 @@ func (e *executor) ExecuteStream(
 // transport representation without sharing mutable payload or header state.
 func executeRequestToBridge(value ExecuteRequest) cpaembedded.ExecuteRequest {
 	return cpaembedded.ExecuteRequest{
+		ObserveExchange:      value.ObserveExchange,
 		Model:                value.Model,
 		Payload:              append([]byte(nil), value.Payload...),
 		Format:               value.Format,
