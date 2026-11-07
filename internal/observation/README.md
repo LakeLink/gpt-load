@@ -30,3 +30,22 @@ The host stops collection and clears the old queue when it reads a valid `unsubs
 During host shutdown, new connections and subscriptions are rejected first. Existing subscriptions continue accepting completion facts until data requests, including upgraded business connections, finish. Production then stops, writers drain retained records within the existing process shutdown deadline, and all plugin handlers close. The shutdown deadline also interrupts blocked writes; each plugin shares the same global budget.
 
 A reproducible local workload comparison and its resource measurements are recorded in [lifecycle-load.md](lifecycle-load.md).
+
+## Encoded event size and omission
+
+`OBSERVATION_EVENT_MAX_BYTES` defaults to 1,048,576 bytes and measures the complete MessagePack envelope and data. At or below that size the original fields and values remain present. Above it, existing binary `body`, `request_body`, and `response_body` fields are omitted and `body_omitted: true` records their removal. Absent bodies retain their absence; an available empty binary body remains distinct from an absent body. If the result still exceeds the threshold, `type` becomes `oversized`, `original_type` carries the original event type, and request/response headers and bodies are omitted. All remaining fields, boot ID, sequence and timestamp remain unchanged. There is one final record per observation.
+
+An oversized record whose remaining metadata exceeds the threshold is delivered as long as its final encoded size fits `OBSERVATION_QUEUE_MAX_BYTES`. That queue budget is also the `max_event_bytes` advertised to clients. A final record over the budget, or a MessagePack encoding failure, produces a publication diagnostic and a sequence gap. Diagnostics contain plugin/event identity, the reason and encoded sizes. Raw headers, bodies, model values and plugin tokens stay out of these diagnostics. Ordinary degradation is logged at debug level; publication failures use warning level.
+
+Size probes use the codec's counting writer with a 4 KiB scratch buffer, then allocate only the final accepted encoding. The source snapshot stays read-only, projections copy only the containing field map, and plugins with the same sequence share the immutable encoded record. Encoding runs synchronously under the publication ordering lock; the connection writer handles network I/O independently.
+
+Additional fixed v1 samples:
+
+- `upstream-request.msgpack` and `upstream-response.msgpack`: HTTP process identities, raw multivalue headers, and available binary bodies.
+- `sse-response.msgpack`: streaming initialization with response headers and an absent body.
+- `body-omitted.msgpack`: request identity and headers after body removal.
+- `oversized.msgpack`: response identity and status with both transport fields removed, retaining `original_type` and `body_omitted`.
+- `zero-values.msgpack`: measured zero first-response duration, false stream/affinity values, empty attempts, zero token counts and an available empty binary request body.
+- `unknown-values.msgpack`: future enum strings and an additional data field preserved for client interoperability checks.
+
+The samples use boot ID `sample-boot`, sequence 1 and timestamp 1700000000123. Resource measurements for large payloads are recorded in [oversized-load.md](oversized-load.md).

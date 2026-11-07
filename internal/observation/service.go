@@ -337,6 +337,8 @@ func (s *Service) Publish(kind string, observedAt time.Time, snapshot func() any
 		return
 	}
 	data := snapshot()
+	// 相同序号的插件共享最终不可变编码记录，避免重复复制正文。
+	encodedBySequence := make(map[uint64]encodedObservation)
 	for _, target := range targets {
 		s.mu.Lock()
 		p, sub := target.plugin, target.sub
@@ -347,15 +349,30 @@ func (s *Service) Publish(kind string, observedAt time.Time, snapshot func() any
 		p.seq++
 		seq := p.seq
 		s.mu.Unlock()
-		encoded, err := encode(Event{Type: kind, BootID: s.bootID, Seq: seq, ObservedAt: observedAt.UTC().UnixMilli(), Data: data})
-		if err != nil || len(encoded) > s.cfg.QueueMaxBytes {
-			reason := "encoded_record_exceeds_queue_budget"
-			if err != nil {
-				reason = "messagepack_encoding_failed"
+		result, cached := encodedBySequence[seq]
+		if !cached {
+			result = encodeObservation(Event{Type: kind, BootID: s.bootID, Seq: seq, ObservedAt: observedAt.UTC().UnixMilli(), Data: data}, s.cfg.EventMaxBytes, s.cfg.QueueMaxBytes)
+			encodedBySequence[seq] = result
+		}
+		fields := logrus.Fields{"plugin_id": target.id, "boot_id": s.bootID, "type": kind, "seq": seq, "observed_at": observedAt.UTC().UnixMilli(), "original_bytes": result.originalBytes, "body_omitted_bytes": result.bodyOmittedBytes, "bytes": result.finalBytes}
+		if result.err != nil {
+			fields["event"] = "observation.publish_failed"
+			fields["reason"] = "messagepack_encoding_failed"
+			if result.err == errEncodedBudget {
+				fields["reason"] = "encoded_record_exceeds_queue_budget"
 			}
-			logrus.WithFields(logrus.Fields{"event": "observation.publish_failed", "plugin_id": target.id, "type": kind, "seq": seq, "bytes": len(encoded), "reason": reason}).Warn("observation publication failed")
+			logrus.WithFields(fields).Warn("observation publication failed")
 			continue
 		}
+		if result.event.BodyOmitted || result.event.Type == "oversized" {
+			fields["event"] = "observation.degraded"
+			fields["reason"] = "body_exceeds_event_threshold"
+			if result.event.Type == "oversized" {
+				fields["reason"] = "metadata_exceeds_event_threshold"
+			}
+			logrus.WithFields(fields).Debug("observation transport data omitted")
+		}
+		encoded := result.bytes
 		s.mu.Lock()
 		if !s.stopped && p.subscription == sub {
 			for len(sub.queue) > 0 && (len(sub.queue) >= s.cfg.QueueMaxEvents || sub.bytes+len(encoded) > s.cfg.QueueMaxBytes) {
