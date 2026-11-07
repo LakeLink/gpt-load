@@ -213,7 +213,7 @@ Installing a newer Setup stops the service gracefully before updating it. Window
 
 ### Environment configuration
 
-Trusted observation plugins can subscribe to Codex subscription request results through `wss://<host>/api/plugins/<plugin_id>/events` using an independent Bearer token and the `gpt-load.observation.v1.msgpack` subprotocol. Send `subscribe` after connecting and `unsubscribe` when finished. Results reuse request logs, timing, attempts, usage, and existing optional request bodies. Queues are bounded and collection starts on subscription. See the [observation protocol and samples](internal/observation/README.md).
+Trusted observation plugins can subscribe to Codex subscription request results through `wss://<host>/api/plugins/<plugin_id>/events` using an independent Bearer token and the `gpt-load.observation.v1.msgpack` subprotocol. Send `subscribe` after connecting and `unsubscribe` when finished. Results reuse request logs, timing, attempts, usage, and existing optional request bodies. Queues are bounded and collection starts on subscription. Unexpected disconnections retain the bounded queue; reconnect and subscribe to resume. Host shutdown drains observations within its existing global deadline. See the [observation protocol and samples](internal/observation/README.md).
 
 At startup, the application reads `.env` in the current directory; existing process environment variables take precedence. Unless noted otherwise, changes require restarting the process or container; see [`.env.example`](.env.example) for the common configuration template.
 

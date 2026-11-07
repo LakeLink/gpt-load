@@ -16,3 +16,13 @@ The independent binary samples in [testdata/observation/v1](../../testdata/obser
 - `request-finished.msgpack`: successful unary `gpt-5` Responses outcome with input/output token counts 3/2, zero cache tokens and cost, and a binary request body containing `{"model":"gpt-5","input":"hello"}`. Dynamic identity/time values use fixed sample values. First-response duration is absent for this sample.
 
 The host integration test sends the control sample directly and compares the received result's stable fields, binary body, usage, and pricing with the result sample. Further process event and size-degradation support extends this same envelope.
+
+## Connection and host lifecycle
+
+Each authenticated, protocol-compatible connection replaces the previous connection for its plugin ID. Rejected handshakes leave the current connection active. Every replacement waits for its own `subscribe` and writes `subscribed` before consuming retained observations. Closing the connection preserves collection and the bounded queue until explicit cancellation or host shutdown.
+
+The host stops collection and clears the old queue when it reads a valid `unsubscribe`. Its single writer sends `unsubscribed` after any event already being written. A subsequent subscription excludes snapshots still being constructed for the canceled subscription; event sequences continue increasing. Writes are attempted once, with the configured timeout (five seconds by default). Failed writes end that connection's consumption; records still queued remain available after reconnection. Ping/pong checks run every 30 seconds and use the write timeout, so idle healthy subscriptions stay active.
+
+During host shutdown, new connections and subscriptions are rejected first. Existing subscriptions continue accepting completion facts until data requests, including upgraded business connections, finish. Production then stops, writers drain retained records within the existing process shutdown deadline, and all plugin handlers close. The shutdown deadline also interrupts blocked writes; each plugin shares the same global budget.
+
+A reproducible local workload comparison and its resource measurements are recorded in [lifecycle-load.md](lifecycle-load.md).

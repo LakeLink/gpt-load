@@ -20,7 +20,10 @@ import (
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/httplifecycle"
+	"gpt-load/internal/observation"
 	"gpt-load/internal/outboundproxy"
+	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/encryption"
 	"gpt-load/internal/platform/i18n"
 	"gpt-load/internal/requestlog"
@@ -108,12 +111,15 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 }
 
 type observationHost struct {
-	server *httptest.Server
-	db     *gorm.DB
-	logs   *requestlog.Service
+	deps         *dig.Container
+	server       *httptest.Server
+	db           *gorm.DB
+	logs         *requestlog.Service
+	observations *observation.Service
+	lifecycle    *httplifecycle.Coordinator
 }
 
-func newObservationHost(t *testing.T, upstream *httptest.Server) *observationHost {
+func newObservationHost(t *testing.T, upstream *httptest.Server, configure ...func(*config.Config)) *observationHost {
 	t.Helper()
 	t.Setenv("AUTH_KEY", "management-test-key")
 	t.Setenv("DATA_DIR", t.TempDir())
@@ -124,6 +130,14 @@ func newObservationHost(t *testing.T, upstream *httptest.Server) *observationHos
 		t.Fatal(err)
 	}
 	deps, err := BuildContainer(func(c *dig.Container) error {
+		if err := c.Decorate(func(cfg *config.Config) *config.Config {
+			for _, setup := range configure {
+				setup(cfg)
+			}
+			return cfg
+		}); err != nil {
+			return err
+		}
 		return c.Decorate(func(original execution.Executor) execution.Executor {
 			return observationTLSExecutor{original, upstream.Client().Transport}
 		})
@@ -131,8 +145,8 @@ func newObservationHost(t *testing.T, upstream *httptest.Server) *observationHos
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture := &observationHost{}
-	err = deps.Invoke(func(engine *gin.Engine, db *gorm.DB, keys encryption.Service, registry *state.CredentialRegistry, manager *state.Manager, logs *requestlog.Service) {
+	fixture := &observationHost{deps: deps}
+	err = deps.Invoke(func(engine *gin.Engine, db *gorm.DB, keys encryption.Service, registry *state.CredentialRegistry, manager *state.Manager, logs *requestlog.Service, observations *observation.Service, lifecycle *httplifecycle.Coordinator) {
 		if err := storage.AutoMigrate(db); err != nil {
 			t.Fatal(err)
 		}
@@ -163,9 +177,12 @@ func newObservationHost(t *testing.T, upstream *httptest.Server) *observationHos
 		if err := logs.Start(); err != nil {
 			t.Fatal(err)
 		}
-		fixture.db, fixture.logs = db, logs
+		fixture.db, fixture.logs, fixture.observations, fixture.lifecycle = db, logs, observations, lifecycle
 		fixture.server = httptest.NewTLSServer(engine)
 		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = observations.Shutdown(ctx)
 			fixture.server.Close()
 			_ = logs.Stop(context.Background())
 			sqlDB, _ := db.DB()

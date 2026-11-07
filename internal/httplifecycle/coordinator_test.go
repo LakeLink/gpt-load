@@ -92,3 +92,32 @@ func TestCoordinatorBeginShutdownCancelsTrackedControlRequest(t *testing.T) {
 		t.Fatal("tracked control request did not return after cancellation")
 	}
 }
+
+func TestWaitDataCompletesWhilePluginHandlerRemains(t *testing.T) {
+	coordinator := NewCoordinator()
+	entered, release := make(chan struct{}), make(chan struct{})
+	engine := gin.New()
+	engine.Use(coordinator.TrackAll())
+	engine.GET("/api/plugins/local/events", func(c *gin.Context) { close(entered); <-release })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/plugins/local/events", nil))
+	}()
+	<-entered
+	defer func() { close(release); <-done }()
+	_, releaseData, _ := coordinator.BindData(httptest.NewRequest("GET", "/v1/responses", nil))
+	coordinator.BeginShutdown()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := coordinator.WaitData(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitData=%v", err)
+	}
+	releaseData()
+	if err := coordinator.WaitData(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait=%v", err)
+	}
+}
