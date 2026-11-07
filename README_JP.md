@@ -84,6 +84,8 @@ API キー、サブスクリプションアカウント、トラフィック制�
 > [!WARNING]
 > 1.x を使用している場合は、先に[「1.x からの移行」](#1x-からの移行)を確認してください。2.0 は 1.x データを開く・インポートする・その場で移行することはできません。
 
+`lakelink` ブランチへの push で、プラグイン機能を含むイメージ `ghcr.io/lakelink/gpt-load:lakelink`（Linux AMD64/ARM64）を自動公開します。各ビルドには特定のリビジョンを選択できる `lakelink-<完全なコミット SHA>` タグも付きます。[LakeLink ワークフロー](.github/workflows/lakelink.yml) はリポジトリの `GITHUB_TOKEN` を使用して GHCR に公開します。
+
 ### 1. サービスを起動する
 
 Docker と Docker Compose が必要です。

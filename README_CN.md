@@ -84,6 +84,8 @@
 > [!WARNING]
 > 如果你正在使用 1.x，请先阅读[从 1.x 切换](#从-1x-切换)。2.0 不能打开、导入或原地迁移 1.x 数据。
 
+推送到 `lakelink` 分支时，会自动发布包含插件功能的镜像 `ghcr.io/lakelink/gpt-load:lakelink`（Linux AMD64/ARM64）。每次构建同时发布 `lakelink-<完整提交 SHA>` 标签，便于指定版本。[LakeLink 工作流](.github/workflows/lakelink.yml) 使用仓库的 `GITHUB_TOKEN` 发布到 GHCR。
+
 ### 1. 启动服务
 
 需要 Docker 与 Docker Compose。

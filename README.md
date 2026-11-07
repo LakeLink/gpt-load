@@ -84,6 +84,8 @@ Login key: `gpt-load-demo`
 > [!WARNING]
 > If you are using 1.x, read [Moving from 1.x](#moving-from-1x) first. 2.0 cannot open, import, or migrate 1.x data in place.
 
+Pushes to the `lakelink` branch publish the plugin-enabled image to `ghcr.io/lakelink/gpt-load:lakelink` (Linux AMD64/ARM64). Each build also publishes `lakelink-<full commit SHA>` for selecting a specific revision. The [LakeLink workflow](.github/workflows/lakelink.yml) uses the repository’s `GITHUB_TOKEN` to publish to GHCR.
+
 ### 1. Start the service
 
 Requires Docker and Docker Compose.
