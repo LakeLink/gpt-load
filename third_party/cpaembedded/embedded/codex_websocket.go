@@ -247,12 +247,36 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 	observe := func(kind, phase string, seq uint64, headers http.Header, status int, body []byte) {
 		if observer != nil {
 			observer(ExchangeObservation{Kind: kind, Phase: phase, Sequence: seq, ObservedAt: time.Now(),
-				Header: headers.Clone(), StatusCode: status, Body: append([]byte(nil), body...), Path: "/v1/responses",
+				Header: headers, StatusCode: status, Body: body, Path: "/v1/responses",
 				UpstreamConnectionID: result.UpstreamConnectionID})
 		}
 	}
+	// SDK 在发送业务帧前保存握手头；首帧写失败时仍保留已完成的升级。
+	// 下一次 GotConn 先结算旧连接，再清空 holder，防止旧头归到新拨号。
+	completeHandshake := func(status int, attempted bool, headers http.Header) {
+		if handshakeSequence > 0 && (len(headers) > 0 || status > 0) {
+			observe("response", "websocket_handshake", handshakeSequence, headers, status, nil)
+		}
+		if attempted {
+			sequence++
+			observe("request", "websocket_request", sequence, requestHeaders, 0, payload)
+		}
+		if len(headers) > 0 {
+			result.Headers = headers
+			result.HeaderObservedAt = time.Now()
+			if s.options.ObserveHeaders != nil {
+				s.options.ObserveHeaders(headers.Clone(), result.HeaderObservedAt)
+			}
+		}
+		handshakeSequence = 0
+	}
 	turnCtx = httptrace.WithClientTrace(turnCtx, &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
+			if handshakeSequence > 0 {
+				// SDK 仅在成功升级后的业务写失败时重拨，因此此前升级状态为 101。
+				completeHandshake(http.StatusSwitchingProtocols, true, internallogging.GetResponseHeaders(turnCtx))
+				internallogging.SetResponseHeaders(turnCtx, nil)
+			}
 			s.trackDialConnection(info.Conn)
 			id := uuid.NewString()
 			s.mu.Lock()
@@ -296,7 +320,7 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 		headers.Set("Session_id", sessionID)
 	}
 	turnCtx = internallogging.WithFreshResponseHeadersHolder(turnCtx)
-	requestHeaders = headers.Clone()
+	requestHeaders = headers
 	stream, executionErr := s.inner.ExecuteStream(turnCtx, s.auth, cliproxyexecutor.Request{
 		Model: model, Payload: append([]byte(nil), payload...), Format: sdktranslator.FormatOpenAIResponse,
 	}, cliproxyexecutor.Options{
@@ -310,37 +334,22 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 		},
 	})
 	if stream != nil {
-		if handshakeSequence > 0 {
-			observe("response", "websocket_handshake", handshakeSequence, stream.Headers, http.StatusSwitchingProtocols, nil)
-		}
-		sequence++
-		observe("request", "websocket_request", sequence, requestHeaders, 0, payload)
-		result.Headers = stream.Headers.Clone()
-		if len(result.Headers) > 0 {
-			result.HeaderObservedAt = time.Now()
-			if s.options.ObserveHeaders != nil {
-				s.options.ObserveHeaders(result.Headers.Clone(), result.HeaderObservedAt)
-			}
-		}
-	}
-	if executionErr != nil && handshakeSequence > 0 {
-		// SDK 的拒绝错误保留可得状态，原始多值头由逐轮 holder 保存。
-		result.Headers = internallogging.GetResponseHeaders(turnCtx)
+		completeHandshake(http.StatusSwitchingProtocols, true, stream.Headers.Clone())
+	} else if executionErr != nil && handshakeSequence > 0 {
+		headers := internallogging.GetResponseHeaders(turnCtx)
 		var status interface{ StatusCode() int }
+		code, attempted := 0, false
 		if errors.As(executionErr, &status) {
-			code := status.StatusCode()
+			code = status.StatusCode()
 			// CPA 将额度/容量错误归一到 429；这里省略无法证明的原始状态。
 			if code == http.StatusTooManyRequests {
 				code = 0
 			}
-			observe("response", "websocket_handshake", handshakeSequence, result.Headers, code, nil)
+		} else if len(headers) > 0 {
+			// 无状态错误携带当前 holder，说明升级成功且首帧发送失败。
+			code, attempted = http.StatusSwitchingProtocols, true
 		}
-		if len(result.Headers) > 0 {
-			result.HeaderObservedAt = time.Now()
-			if s.options.ObserveHeaders != nil {
-				s.options.ObserveHeaders(result.Headers.Clone(), result.HeaderObservedAt)
-			}
-		}
+		completeHandshake(code, attempted, headers)
 	}
 	close(headersReady)
 	if stream != nil {

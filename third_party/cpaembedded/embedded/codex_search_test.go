@@ -22,7 +22,11 @@ func TestCodexSearchResponseLimitPreservesFailureMetadata(t *testing.T) {
 			response, err := NewCodexHTTPExecutor().ExecuteCanonical(ctx, "credential", CodexCredential{
 				Type: ProviderCodex, AccessToken: "test-access", RefreshToken: "test-refresh", AccountID: "account-one",
 			}, ExecuteRequest{Model: "gpt-5", Payload: []byte(`{"id":"session","model":"gpt-5"}`),
-				Format: "openai-response", RequestPath: "/v1/alpha/search", ObserveExchange: func(fact ExchangeObservation) { exchanges = append(exchanges, fact) }})
+				Format: "openai-response", RequestPath: "/v1/alpha/search", ObserveExchange: func(fact ExchangeObservation) {
+					fact.Header = fact.Header.Clone()
+					fact.Body = append([]byte(nil), fact.Body...)
+					exchanges = append(exchanges, fact)
+				}})
 			if err == nil || response.StatusCode != status || response.Headers.Get("Retry-After") != "17" || len(response.Payload) != 0 {
 				t.Fatalf("oversized response = %#v, error = %v", response, err)
 			}

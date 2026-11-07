@@ -2,6 +2,11 @@ package locales
 
 // MessagesZhCN contains Simplified Chinese control-plane translations.
 var MessagesZhCN = map[string]string{
+	"observation.binary_control_required":        "需要二进制 MessagePack 控制消息",
+	"observation.invalid_control":                "MessagePack 控制消息无效",
+	"observation.control_fields_required":        "type 和 command_id 为必填字段",
+	"observation.unknown_command":                "未知控制命令",
+	"observation.shutting_down":                  "宿主正在关闭",
 	"demo.restricted":                            "演示环境不支持此操作；真实上游调用、授权和网络探测已关闭",
 	"access_key.custom_invalid":                  "密钥最多 256 个字符，仅支持英文字母、数字和英文符号，不允许空白。",
 	"access_key.admin_conflict":                  "不能使用管理员密钥作为访问密钥。",

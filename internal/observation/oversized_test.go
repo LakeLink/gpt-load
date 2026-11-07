@@ -24,6 +24,7 @@ import (
 	"gpt-load/internal/observation"
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/httproute"
+	"gpt-load/internal/platform/i18n"
 )
 
 func TestEncodedThresholdIncludesEnvelopeAndPreservesSnapshot(t *testing.T) {
@@ -70,6 +71,9 @@ func TestEncodedThresholdIncludesEnvelopeAndPreservesSnapshot(t *testing.T) {
 
 func oversizedFixture(t *testing.T, threshold, budget int, ids ...string) (*observation.Service, func(string) *websocket.Conn) {
 	t.Helper()
+	if err := i18n.Init(); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.ObservationConfig{QueueMaxEvents: 200, QueueMaxBytes: budget, EventMaxBytes: threshold, WriteTimeoutSeconds: 1}
 	for _, id := range ids {
 		cfg.Plugins = append(cfg.Plugins, config.ObservationPlugin{ID: id, Token: "test-token"})

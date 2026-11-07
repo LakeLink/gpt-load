@@ -19,6 +19,7 @@ import (
 	"gpt-load/internal/observation"
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/httproute"
+	"gpt-load/internal/platform/i18n"
 )
 
 func TestSubscriptionQueueBudgetsAndCollectionLifetime(t *testing.T) {
@@ -114,6 +115,9 @@ func readMessage(t *testing.T, conn *websocket.Conn) map[string]any {
 
 func observationFixture(t *testing.T, events, bytes int, stall ...*writeStall) (*observation.Service, func() *websocket.Conn) {
 	t.Helper()
+	if err := i18n.Init(); err != nil {
+		t.Fatal(err)
+	}
 	service := observation.New(&config.Config{Observation: config.ObservationConfig{Plugins: []config.ObservationPlugin{{ID: "local", Token: "test-token"}}, QueueMaxEvents: events, QueueMaxBytes: bytes, EventMaxBytes: bytes, WriteTimeoutSeconds: 1}})
 	engine := gin.New()
 	routes, err := httproute.NewRegistry(service.HTTPModule())

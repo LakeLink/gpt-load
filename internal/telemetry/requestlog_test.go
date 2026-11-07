@@ -44,6 +44,10 @@ func TestRequestTelemetryContractUsesExactFieldAllowlist(t *testing.T) {
 			"RequestBody",
 		},
 		reflect.TypeOf(Attempt{}): {
+			"UpstreamConnectionID",
+			"AttemptID",
+			"CredentialVersion",
+			"IdentityGeneration",
 			"Sequence",
 			"CompletedAt",
 			"GroupID",

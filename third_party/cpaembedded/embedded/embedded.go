@@ -852,7 +852,7 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	if t.observation != nil && t.observation.exchangeObserver != nil {
 		sequence = t.observation.exchangeSequence.Add(1)
 		t.observation.exchangeObserver(ExchangeObservation{Kind: "request", Sequence: sequence, Phase: "http_exchange",
-			ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: req.Header.Clone()})
+			ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: req.Header})
 	}
 	if t.observation != nil {
 		t.observation.observe(req)
@@ -864,7 +864,7 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 			phase = "sse_initialization"
 		}
 		t.observation.exchangeObserver(ExchangeObservation{Kind: "response", Sequence: sequence, Phase: phase,
-			ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: resp.Header.Clone(), StatusCode: resp.StatusCode})
+			ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: resp.Header, StatusCode: resp.StatusCode})
 	}
 	if err != nil {
 		return nil, err

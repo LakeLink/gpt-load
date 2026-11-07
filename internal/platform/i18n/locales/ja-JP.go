@@ -2,6 +2,11 @@ package locales
 
 // MessagesJaJP contains Japanese control-plane translations.
 var MessagesJaJP = map[string]string{
+	"observation.binary_control_required":        "バイナリ MessagePack 制御メッセージが必要です",
+	"observation.invalid_control":                "MessagePack 制御メッセージが無効です",
+	"observation.control_fields_required":        "type と command_id は必須です",
+	"observation.unknown_command":                "不明な制御コマンドです",
+	"observation.shutting_down":                  "ホストはシャットダウン中です",
 	"demo.restricted":                            "デモではこの操作を利用できません。上流リクエスト、認証連携、ネットワーク診断は無効です。",
 	"access_key.custom_invalid":                  "空白や制御文字を含まない、256 文字以内の表示可能な ASCII 文字を使用してください。",
 	"access_key.admin_conflict":                  "管理者キーをアクセスキーとして使用することはできません。",
