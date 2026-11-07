@@ -71,6 +71,9 @@ func finishedData(event telemetry.RequestEvent) map[string]any {
 			attempt["credential_version"] = a.CredentialVersion
 			attempt["identity_generation"] = a.IdentityGeneration
 		}
+		if a.UpstreamConnectionID != "" {
+			attempt["upstream_connection_id"] = a.UpstreamConnectionID
+		}
 		if a.UpstreamRequestID != "" {
 			attempt["upstream_request_id"] = a.UpstreamRequestID
 		}

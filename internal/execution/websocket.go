@@ -9,6 +9,24 @@ import (
 	"gpt-load/internal/reasoning"
 )
 
+type websocketAttemptKey struct{}
+
+// WithWebsocketAttempt 固定本轮执行身份，复用连接时仍由调用者逐轮传入。
+func WithWebsocketAttempt(ctx context.Context, spec AttemptSpec) context.Context {
+	identity := AttemptSpec{
+		RequestID: spec.RequestID, AttemptID: spec.AttemptID, Sequence: spec.Sequence,
+		ChannelID: spec.ChannelID, UpstreamModel: spec.UpstreamModel,
+		Credential: NewCredentialSnapshot(spec.Credential.ID, spec.Credential.Version, spec.Credential.IdentityGeneration, nil),
+	}
+	return context.WithValue(ctx, websocketAttemptKey{}, identity)
+}
+
+// WebsocketAttempt 返回当前轮次的显式执行上下文。
+func WebsocketAttempt(ctx context.Context) (AttemptSpec, bool) {
+	spec, ok := ctx.Value(websocketAttemptKey{}).(AttemptSpec)
+	return spec, ok
+}
+
 // WebsocketCapabilities 是执行路径承诺的原生 Responses WS 能力，不由 HTTP 存储声明推导。
 type WebsocketCapabilities struct {
 	Native          bool
@@ -26,11 +44,12 @@ func (c WebsocketCapabilities) Supports(required WebsocketCapabilities) bool {
 
 // WebsocketResult 只报告本轮发送证据和错误；usage/响应 ID 由原生事件提供。
 type WebsocketResult struct {
-	AppliedReasoning *reasoning.Config
-	DispatchState    DispatchState
-	Header           http.Header
-	HeaderObservedAt time.Time
-	Error            *ErrorEvidence
+	UpstreamConnectionID string
+	AppliedReasoning     *reasoning.Config
+	DispatchState        DispatchState
+	Header               http.Header
+	HeaderObservedAt     time.Time
+	Error                *ErrorEvidence
 }
 
 // WebsocketSession 固定已选目标；同流顺序由网关保证，支持的不同流可并发调用。

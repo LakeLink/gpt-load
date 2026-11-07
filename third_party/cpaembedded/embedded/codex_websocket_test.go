@@ -104,7 +104,15 @@ func TestCodexWSSessionForwardsPreparedHeaders(t *testing.T) {
 	defer server.Close()
 	session := wsTestSession(t, server.URL)
 	session.options.Headers = http.Header{"X-Codex-Turn-State": {"state-fixture"}, "Authorization": {"Bearer untrusted"}}
-	if _, err := session.ExecuteTurn(t.Context(), json.RawMessage(`{"model":"gpt-5","input":"hello"}`), nil); err != nil {
+	ctx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) {
+		if fact.Kind == "request" {
+			if fact.Header.Get("X-Codex-Turn-State") != "state-fixture" || fact.Header.Get("Authorization") != "Bearer untrusted" {
+				t.Errorf("prepared headers=%v", fact.Header)
+			}
+			fact.Header.Set("X-Codex-Turn-State", "observer mutation")
+		}
+	})
+	if _, err := session.ExecuteTurn(ctx, json.RawMessage(`{"model":"gpt-5","input":"hello"}`), nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -236,6 +244,8 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 	}
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	defer cancelFirst()
+	var firstFacts, secondFacts []ExchangeObservation
+	firstCtx = WithCodexWSTurnObserver(firstCtx, func(fact ExchangeObservation) { firstFacts = append(firstFacts, fact) })
 	first, err := session.ExecuteTurn(firstCtx, json.RawMessage(`{"model":"gpt-5","input":"hello","store":false}`), consume)
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +254,8 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 		t.Fatalf("missing terminal result: %+v", first)
 	}
 	cancelFirst() // 成功请求的 context 结束不应关闭已空闲的会话。
-	second, err := session.ExecuteTurn(context.Background(), json.RawMessage(fmt.Sprintf(`{"model":"gpt-5","input":"continue","previous_response_id":%q}`, first.ResponseID)), consume)
+	secondCtx := WithCodexWSTurnObserver(context.Background(), func(fact ExchangeObservation) { secondFacts = append(secondFacts, fact) })
+	second, err := session.ExecuteTurn(secondCtx, json.RawMessage(fmt.Sprintf(`{"model":"gpt-5","input":"continue","previous_response_id":%q}`, first.ResponseID)), consume)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +265,9 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 	if first.Headers.Get("X-Codex-Test") != "handshake" || !first.HeaderObservedAt.Equal(headerAt) ||
 		len(second.Headers) != 0 || !second.HeaderObservedAt.IsZero() || headerCalls != 1 {
 		t.Fatal("handshake headers were lost or reused as fresh observation")
+	}
+	if len(firstFacts) != 3 || len(secondFacts) != 1 || first.UpstreamConnectionID == "" || first.UpstreamConnectionID != second.UpstreamConnectionID || firstFacts[0].Phase != "websocket_handshake" || firstFacts[1].StatusCode != 101 || firstFacts[2].Phase != "websocket_request" || firstFacts[2].Sequence != 2 || secondFacts[0].Sequence != 1 || secondFacts[0].UpstreamConnectionID != first.UpstreamConnectionID || !strings.Contains(string(secondFacts[0].Body), `"input":"continue"`) {
+		t.Fatalf("first=%+v second=%+v facts=%+v / %+v", first, second, firstFacts, secondFacts)
 	}
 	other := wsTestSession(t, server.URL)
 	if _, err := other.ExecuteTurn(context.Background(), json.RawMessage(`{"model":"gpt-5","input":"another"}`), consume); err != nil {
@@ -411,16 +425,22 @@ func TestCodexWSSessionPreservesUsageLimitRetryAfter(t *testing.T) {
 func TestCodexWSSessionPreservesHandshakeUsageLimitRetryAfter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header()["X-Raw-Rejection"] = []string{"one", "two"}
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"quota exhausted","resets_in_seconds":7200}}`)
 	}))
 	defer server.Close()
 	session := wsTestSession(t, server.URL)
-	_, err := session.ExecuteTurn(context.Background(), json.RawMessage(`{"model":"gpt-5","input":"hello"}`), nil)
+	var facts []ExchangeObservation
+	ctx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) { facts = append(facts, fact) })
+	result, err := session.ExecuteTurn(ctx, json.RawMessage(`{"model":"gpt-5","input":"hello"}`), nil)
 	var failure *CodexWSError
 	if !errors.As(err, &failure) || failure.HTTPStatus != http.StatusTooManyRequests ||
 		failure.UpstreamType != "usage_limit_reached" || failure.RetryAfter != 2*time.Hour {
 		t.Fatalf("handshake usage-limit metadata was lost: error=%v failure=%+v", err, failure)
+	}
+	if len(facts) != 2 || facts[0].UpstreamConnectionID == "" || facts[0].UpstreamConnectionID != result.UpstreamConnectionID || facts[1].Phase != "websocket_handshake" || facts[1].StatusCode != 0 || len(facts[1].Header.Values("X-Raw-Rejection")) != 2 || result.Headers.Get("X-Raw-Rejection") != "one" {
+		t.Fatalf("failure observations=%+v result=%+v", facts, result)
 	}
 }
 

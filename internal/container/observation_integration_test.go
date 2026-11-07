@@ -221,6 +221,10 @@ type observationTLSExecutor struct {
 	transport http.RoundTripper
 }
 
+func (e observationTLSExecutor) OpenWebsocket(ctx context.Context, spec execution.AttemptSpec) (execution.WebsocketSession, execution.WebsocketResult) {
+	spec.Proxy = outboundproxy.Effective{}
+	return e.Executor.(execution.WebsocketOpener).OpenWebsocket(ctx, spec)
+}
 func (e observationTLSExecutor) Execute(ctx context.Context, spec execution.AttemptSpec) execution.AttemptResult {
 	spec.Proxy = outboundproxy.Effective{}
 	return e.Executor.Execute(context.WithValue(ctx, "cliproxy.roundtripper", e.transport), spec)

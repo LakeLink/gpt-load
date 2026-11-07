@@ -31,6 +31,7 @@ type WSSessionOptions struct {
 
 // WSTurnResult 的 Usage 保留上游 JSON，缺失时为 nil，不伪造零用量。
 type WSTurnResult struct {
+	UpstreamConnectionID         string
 	AppliedReasoningEffort       string
 	AppliedReasoningMode         string
 	AppliedReasoningBudgetTokens *int64
@@ -85,6 +86,7 @@ func (s *WSSession) ExecuteTurn(ctx context.Context, payload json.RawMessage, em
 	}
 	result, err := bridge.ExecuteTurn(ctx, payload, emit)
 	return WSTurnResult{
+		UpstreamConnectionID:         result.UpstreamConnectionID,
 		AppliedReasoningEffort:       result.AppliedReasoningEffort,
 		AppliedReasoningMode:         result.AppliedReasoningMode,
 		AppliedReasoningBudgetTokens: result.AppliedReasoningBudgetTokens,
@@ -133,4 +135,9 @@ func wsErrorFromBridge(err error) error {
 		}
 	}
 	return &WSError{Code: "internal_error", DispatchState: WSMaybeSent}
+}
+
+// WithWSTurnObserver 在本轮发布连接握手和请求事实。
+func WithWSTurnObserver(ctx context.Context, observer func(ExchangeObservation)) context.Context {
+	return cpaembedded.WithCodexWSTurnObserver(ctx, observer)
 }

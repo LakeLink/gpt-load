@@ -73,6 +73,7 @@ type ForwardInput struct {
 // UpstreamResult is the gateway's stable view of one logical execution
 // attempt. SDK-internal transport recovery remains inside this result.
 type UpstreamResult struct {
+	UpstreamConnectionID      string
 	StatusCode                int
 	Header                    http.Header
 	Body                      []byte

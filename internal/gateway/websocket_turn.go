@@ -577,9 +577,10 @@ func (s *websocketConnection) executeTurn(turn websocketTurn) {
 			return
 		}
 		defer releaseGroup()
+		recorder.freezeNextAttemptIdentity(input.AttemptID, input.Credential.Version, input.Credential.IdentityGeneration)
 		started := recorder.beforeForward()
 		forwardAttempts++
-		ctx, cancel := context.WithTimeout(requestCtx, selection.Group.Timeouts.Request)
+		ctx, cancel := context.WithTimeout(execution.WithWebsocketAttempt(requestCtx, spec), selection.Group.Timeouts.Request)
 		var firstByteDeadline time.Time
 		if selection.Group.Timeouts.FirstByte > 0 {
 			firstByteDeadline = time.Now().Add(selection.Group.Timeouts.FirstByte)
@@ -626,7 +627,7 @@ func (s *websocketConnection) executeTurn(turn websocketTurn) {
 		} else {
 			unlock()
 		}
-		result := UpstreamResult{DispatchState: wsResult.DispatchState, Header: wsResult.Header, ExecutionError: wsResult.Error, UpstreamProtocol: protocol.OpenAIResponses}
+		result := UpstreamResult{UpstreamConnectionID: wsResult.UpstreamConnectionID, DispatchState: wsResult.DispatchState, Header: wsResult.Header, ExecutionError: wsResult.Error, UpstreamProtocol: protocol.OpenAIResponses}
 		if s.ctx.Err() != nil {
 			result.Err = s.ctx.Err()
 			result.ExecutionError = &execution.ErrorEvidence{Kind: execution.ErrorKindCanceled, OriginHint: execution.ErrorOriginDownstream, Code: "websocket_canceled"}
@@ -1216,6 +1217,7 @@ func (s *websocketConnection) runWebsocketAttempt(ctx context.Context, cancel co
 	if idle != nil {
 		idle.stop()
 	}
+	result.UpstreamConnectionID = wsResult.UpstreamConnectionID
 	result.DispatchState = wsResult.DispatchState
 	result.RequestWritten = wsResult.DispatchState == execution.DispatchMaybeSent
 	result.Header = wsResult.Header
