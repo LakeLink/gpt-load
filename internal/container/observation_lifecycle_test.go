@@ -75,6 +75,11 @@ func TestObservationReconnectRetainsNewestRequestsAndReplacement(t *testing.T) {
 	}
 	third := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 	defer third.CloseNow()
+	// Dial 返回后升级 handler 仍可能尚未安装新代次；控制回复确认接替完成。
+	fixture.command(t, third, "unknown", "installed")
+	if reply := readObservation(t, third); reply["code"] != "unknown_command" || reply["command_id"] != "installed" {
+		t.Fatalf("replacement readiness=%#v", reply)
+	}
 	// 旧代次的迟到取消和清理保持身份所属订阅。
 	var late []byte
 	if err := codec.NewEncoderBytes(&late, &codec.MsgpackHandle{}).Encode(map[string]string{"type": "unsubscribe", "command_id": "late"}); err != nil {

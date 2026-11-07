@@ -695,6 +695,76 @@ func TestCodexWSSessionGuardsSDKSendRetry(t *testing.T) {
 	}
 }
 
+func TestCodexWSSessionObservesFailedReusedSend(t *testing.T) {
+	var connections, frames atomic.Int32
+	release := make(chan struct{})
+	defer close(release)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connections.Add(1)
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Error(err)
+			return
+		}
+		frames.Add(1)
+		if err := conn.WriteMessage(websocket.TextMessage, wsCompleted("resp_first")); err != nil {
+			t.Error(err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err == nil {
+			frames.Add(1)
+		}
+		// 保留读端，让失败确定发生在复用连接的写入，而非服务端关闭通知。
+		<-release
+	}))
+	defer server.Close()
+	session := wsTestSession(t, server.URL)
+	var connection net.Conn
+	firstCtx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { connection = info.Conn },
+	})
+	first, err := session.ExecuteTurn(firstCtx, json.RawMessage(`{"model":"gpt-5","input":"first"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var facts []ExchangeObservation
+	nextCtx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) {
+		fact.Header = fact.Header.Clone()
+		fact.Body = append([]byte(nil), fact.Body...)
+		facts = append(facts, fact)
+	})
+	payload := json.RawMessage(`{"model":"gpt-5","input":"second","previous_response_id":"resp_first"}`)
+	// SDK 在准备 URL 时失败，保留会话且没有发送事实。
+	session.auth.Attributes["base_url"] = "http://[invalid"
+	beforeSend, err := session.ExecuteTurn(nextCtx, payload, nil)
+	if err == nil || beforeSend.DispatchState != CodexWSNotSent || len(facts) != 0 {
+		t.Fatalf("preparation failure fabricated a send: result=%+v error=%v facts=%+v", beforeSend, err, facts)
+	}
+	session.auth.Attributes["base_url"] = server.URL
+	if err := connection.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := session.ExecuteTurn(nextCtx, payload, nil)
+	if err == nil || second.DispatchState != CodexWSMaybeSent {
+		t.Fatalf("failed reused send: result=%+v error=%v", second, err)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("lost reused send: %+v", facts)
+	}
+	fact := facts[0]
+	if fact.Kind != "request" || fact.Phase != "websocket_request" || fact.Sequence != 1 || fact.UpstreamConnectionID == "" || fact.UpstreamConnectionID != first.UpstreamConnectionID || second.UpstreamConnectionID != first.UpstreamConnectionID || string(fact.Body) != string(payload) {
+		t.Fatalf("reused send association: first=%+v second=%+v fact=%+v", first, second, fact)
+	}
+	if connections.Load() != 1 || frames.Load() != 1 {
+		t.Fatalf("connections=%d frames=%d", connections.Load(), frames.Load())
+	}
+}
+
 func TestCodexWSSessionRejectsSDKReplacementConnection(t *testing.T) {
 	var frames, handshakes atomic.Int32
 	var handlersMu sync.Mutex

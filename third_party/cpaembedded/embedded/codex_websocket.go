@@ -350,6 +350,9 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 			code, attempted = http.StatusSwitchingProtocols, true
 		}
 		completeHandshake(code, attempted, headers)
+	} else if executionErr != nil && reuse && cliproxyexecutor.UpstreamAttempted(turnCtx) {
+		// 复用连接在写入前标记尝试；写失败仍属于当前轮次，握手沿用原连接。
+		completeHandshake(0, true, nil)
 	}
 	close(headersReady)
 	if stream != nil {
