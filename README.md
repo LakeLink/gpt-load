@@ -213,6 +213,8 @@ Installing a newer Setup stops the service gracefully before updating it. Window
 
 ### Environment configuration
 
+Trusted observation plugins can subscribe to Codex subscription request results through `wss://<host>/api/plugins/<plugin_id>/events` using an independent Bearer token and the `gpt-load.observation.v1.msgpack` subprotocol. Send `subscribe` after connecting and `unsubscribe` when finished. Results reuse request logs, timing, attempts, usage, and existing optional request bodies. Queues are bounded and collection starts on subscription. See the [observation protocol and samples](internal/observation/README.md).
+
 At startup, the application reads `.env` in the current directory; existing process environment variables take precedence. Unless noted otherwise, changes require restarting the process or container; see [`.env.example`](.env.example) for the common configuration template.
 
 <details>
@@ -242,6 +244,11 @@ At startup, the application reads `.env` in the current directory; existing proc
 | `LOG_LEVEL` | `info` | Supports `panic`, `fatal`, `error`, `warn`, `warning`, `info`, `debug`, and `trace`; invalid values warn and fall back to `info`. |
 | `LOG_FORMAT` | `text` | Supports `text` and `json`; any other value fails startup. |
 | `MODELS_DEV_AUTO_SYNC_ENABLED` | Unset, initial default `true` | When unset, uses the persisted management UI setting; when set, forces Models.dev auto-sync on or off and makes the same UI option read-only. |
+| `OBSERVATION_PLUGINS` | `Empty` | JSON array of trusted plugin credentials, e.g. `[{"id":"research","token":"independent-secret"}]`; empty disables observation. |
+| `OBSERVATION_QUEUE_MAX_EVENTS` | `200` | Maximum queued events per subscribed plugin; evicts oldest events when full. |
+| `OBSERVATION_QUEUE_MAX_BYTES` | `4000000` | Maximum encoded queue bytes per subscribed plugin and advertised client receive budget. |
+| `OBSERVATION_EVENT_MAX_BYTES` | `1048576` | Positive event size threshold, at most the queue byte budget. |
+| `OBSERVATION_WRITE_TIMEOUT_SECONDS` | `5` | Positive timeout in seconds for a plugin write or heartbeat. |
 
 Environment proxies apply only when no proxy is specified on the credential, group, or global settings.
 

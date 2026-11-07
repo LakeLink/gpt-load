@@ -213,6 +213,8 @@ Windows の一般ユーザーは代わりに `gpt-load-windows-setup.exe` を利
 
 ### 環境設定
 
+信頼する観測プラグインは、独立した Bearer トークンと `gpt-load.observation.v1.msgpack` サブプロトコルを使い、`wss://<host>/api/plugins/<plugin_id>/events` から Codex サブスクリプションのリクエスト結果を購読できます。接続後に `subscribe`、終了時に `unsubscribe` を送信します。結果には既存のリクエストログ、処理時間、試行、使用量、取得済みの任意リクエスト本文を含み、購読ごとに上限付きキューを使用します。[観測プロトコルとサンプル](internal/observation/README.md)を参照してください。
+
 アプリケーションは起動時にカレントディレクトリの `.env` を読み込み、既存のプロセス環境変数を優先します。特記がない限り、変更後はプロセスまたはコンテナを再起動してください。一般的な設定テンプレートは [`.env.example`](.env.example) を参照してください。
 
 <details>
@@ -242,6 +244,11 @@ Windows の一般ユーザーは代わりに `gpt-load-windows-setup.exe` を利
 | `LOG_LEVEL` | `info` | `panic`、`fatal`、`error`、`warn`、`warning`、`info`、`debug`、`trace` に対応します。無効な値は警告を出して `info` に戻ります。 |
 | `LOG_FORMAT` | `text` | `text` と `json` に対応します。それ以外の値では起動に失敗します。 |
 | `MODELS_DEV_AUTO_SYNC_ENABLED` | 未設定、初期既定値 `true` | 未設定時は管理画面に保存された設定を使用します。設定時は Models.dev の自動同期を強制的に有効または無効にし、管理画面の同名オプションを読み取り専用にします。 |
+| `OBSERVATION_PLUGINS` | `空` | 信頼するプラグイン認証情報の JSON 配列。例: `[{"id":"research","token":"independent-secret"}]`。空の場合は観測を無効化します。 |
+| `OBSERVATION_QUEUE_MAX_EVENTS` | `200` | 購読したプラグインごとの最大イベント数。満杯になると古いイベントから削除します。 |
+| `OBSERVATION_QUEUE_MAX_BYTES` | `4000000` | プラグインごとのエンコード済みキュー上限とクライアント受信予算（バイト）。 |
+| `OBSERVATION_EVENT_MAX_BYTES` | `1048576` | イベントサイズのしきい値。正の整数でキューのバイト上限以下に設定します。 |
+| `OBSERVATION_WRITE_TIMEOUT_SECONDS` | `5` | プラグインへの書き込みとハートビートのタイムアウト秒数。正の整数です。 |
 
 環境プロキシは、認証情報、Group、グローバル設定のいずれにもプロキシが指定されていない場合にのみ適用されます。
 

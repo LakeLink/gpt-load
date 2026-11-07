@@ -19,6 +19,7 @@ const (
 	OwnerControl Owner = "control"
 	OwnerData    Owner = "data"
 	OwnerWeb     Owner = "web"
+	OwnerPlugin  Owner = "plugin"
 )
 
 // AuthPolicy identifies the authentication contract of a route module.
@@ -28,6 +29,7 @@ const (
 	AuthNone      AuthPolicy = "none"
 	AuthControl   AuthPolicy = "control"
 	AuthAccessKey AuthPolicy = "access-key"
+	AuthPlugin    AuthPolicy = "plugin"
 
 	ginMaximumHandlerChainLength = 63
 )
@@ -701,6 +703,8 @@ func validateOwnerAuth(module Module) error {
 		required = AuthControl
 	case OwnerData:
 		required = AuthAccessKey
+	case OwnerPlugin:
+		required = AuthPlugin
 	default:
 		return fmt.Errorf("invalid owner %q", module.Owner)
 	}
