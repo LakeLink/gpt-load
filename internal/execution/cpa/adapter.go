@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"gpt-load/internal/channel"
+	"gpt-load/internal/codexprivacy"
 	"gpt-load/internal/codexrecovery"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
@@ -45,6 +46,9 @@ var subscriptionResponseHeaderNames = [...]string{
 }
 
 type Adapter struct {
+	privacy         *codexprivacy.Cache
+	cookies         *codexprivacy.Cookies
+	turns           *codexprivacy.Turns
 	credentials     credentialPreparer
 	channels        *channel.Registry
 	providers       map[channel.ProviderKind]providerBridge
@@ -81,6 +85,9 @@ func (a *Adapter) recordPassiveQuotaObservation(
 func NewAdapter(credentials *subscription.CredentialManager, channels *channel.Registry) *Adapter {
 	return &Adapter{
 		credentials: credentials,
+		privacy:     codexprivacy.NewCache(),
+		cookies:     codexprivacy.NewCookies(),
+		turns:       codexprivacy.NewTurns(),
 		channels:    channels,
 		providers: indexProviderBridges(
 			newCodexProviderBridge(),
@@ -203,6 +210,20 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 		return execution.AttemptResult{
 			DispatchState: execution.DispatchNotSent,
 			Error:         modelAttemptPreparationEvidence(evidence),
+		}
+	}
+	if provider.ProviderKind() == channel.ProviderCodex {
+		if err := a.scopeCodexCacheIdentity(ctx, spec, &request); err != nil {
+			return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
+		}
+		routingHeaders := request.Headers.Clone()
+		request.Payload, request.Headers, err = a.prepareCodexPrivacy(spec, request.Payload, request.Headers)
+		if err != nil {
+			return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
+		}
+		ctx, request.Payload, _, err = a.bindCodexRouting(ctx, spec.Credential.IdentityFingerprint(), codexRouteScope(spec, baseURL), spec.RequestID, spec.Body, routingHeaders, request.Payload, request.Headers)
+		if err != nil {
+			return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
 		}
 	}
 	canonical := preparedCredential.Canonical()
@@ -361,6 +382,20 @@ func (a *Adapter) ExecuteStream(
 		return execution.StreamResult{
 			DispatchState: execution.DispatchNotSent,
 			Error:         modelAttemptPreparationEvidence(evidence),
+		}
+	}
+	if provider.ProviderKind() == channel.ProviderCodex {
+		if err := a.scopeCodexCacheIdentity(ctx, spec, &request); err != nil {
+			return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
+		}
+		routingHeaders := request.Headers.Clone()
+		request.Payload, request.Headers, err = a.prepareCodexPrivacy(spec, request.Payload, request.Headers)
+		if err != nil {
+			return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
+		}
+		ctx, request.Payload, _, err = a.bindCodexRouting(ctx, spec.Credential.IdentityFingerprint(), codexRouteScope(spec, baseURL), spec.RequestID, spec.Body, routingHeaders, request.Payload, request.Headers)
+		if err != nil {
+			return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
 		}
 	}
 	canonical := preparedCredential.Canonical()

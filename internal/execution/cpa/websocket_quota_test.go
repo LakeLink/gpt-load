@@ -57,10 +57,11 @@ func TestWebsocketQuotaEventsRefreshBeforeTurnCompletesWithoutHeaders(t *testing
 	session := &observedWebsocketSession{
 		WebsocketSession: &quotaEventSession{event: event}, adapter: adapter, spec: validSpec(t, row, crypt),
 	}
+	prepareObservedQuotaSession(t, session)
 	var lastVersion uint64
 	for turn := 0; turn < 2; turn++ {
 		startedAt := time.Now().UnixMilli()
-		result := session.ExecuteTurn(t.Context(), nil, func(_ context.Context, forwarded []byte) error {
+		result := session.ExecuteTurn(execution.WithWebsocketAttempt(t.Context(), session.spec), session.spec.Body, func(_ context.Context, forwarded []byte) error {
 			if !bytes.Equal(forwarded, event) {
 				t.Fatal("quota observation changed the forwarded event")
 			}
@@ -120,10 +121,11 @@ func TestWebsocketQuotaReusedSessionRefreshesAccountPercentageWithoutHeaders(t *
 	}
 	inner := &quotaEventSession{}
 	session := &observedWebsocketSession{WebsocketSession: inner, adapter: adapter, spec: validSpec(t, credential, crypt)}
+	prepareObservedQuotaSession(t, session)
 	for _, used := range []int{94, 95} {
 		// 沿用实测事件结构，仅改变用量，模拟同一连接连续收到的新额度。
 		inner.event = bytes.Replace(payload, []byte(`"used_percent": 6`), fmt.Appendf(nil, `"used_percent": %d`, used), 1)
-		result := session.ExecuteTurn(t.Context(), session.spec.Body, func(_ context.Context, forwarded []byte) error {
+		result := session.ExecuteTurn(execution.WithWebsocketAttempt(t.Context(), session.spec), session.spec.Body, func(_ context.Context, forwarded []byte) error {
 			if !bytes.Equal(forwarded, inner.event) {
 				t.Fatal("quota observation changed the forwarded event")
 			}
@@ -227,7 +229,7 @@ func TestWebsocketQuotaKeepsHandshakeWhenEventOnlyUpdatesSpark(t *testing.T) {
 				return nil
 			}
 			var quotaErr error
-			result := session.ExecuteTurn(t.Context(), spec.Body, func(_ context.Context, forwarded []byte) error {
+			result := session.ExecuteTurn(execution.WithWebsocketAttempt(t.Context(), spec), spec.Body, func(_ context.Context, forwarded []byte) error {
 				if bytes.Equal(forwarded, event) && flushDuringTurn {
 					quotaErr = checkQuota()
 				}
@@ -241,4 +243,16 @@ func TestWebsocketQuotaKeepsHandshakeWhenEventOnlyUpdatesSpark(t *testing.T) {
 			}
 		})
 	}
+}
+
+func prepareObservedQuotaSession(t *testing.T, session *observedWebsocketSession) {
+	t.Helper()
+	identity, err := session.adapter.privacy.Resolve(session.spec.Credential.IdentityFingerprint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.privacy = identity
+	session.routeOwner = session.spec.Credential.IdentityFingerprint()
+	session.routeScope = codexRouteScope(session.spec, "")
+	session.originalHeaders = session.spec.Header.Clone()
 }

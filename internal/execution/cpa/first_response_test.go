@@ -30,7 +30,7 @@ func TestConvertedCodexSamplesMetadataBeforeCPAConversion(t *testing.T) {
 		ClientProtocol: protocol.Anthropic, Operation: execution.OperationChatCompletion,
 		ClientModel: "gpt-5.6-luna", UpstreamModel: "gpt-5.6-luna", Method: http.MethodPost, Path: "/v1/messages",
 		Body:       []byte(`{"model":"gpt-5.6-luna","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`),
-		Credential: execution.NewCredentialSnapshot(1, 1, 1, canonical),
+		Credential: execution.NewCredentialSnapshot(1, 1, 1, canonical).WithIdentityFingerprint("fixture-account"),
 	})
 	observed := make(chan struct{})
 	reader, writer := io.Pipe()

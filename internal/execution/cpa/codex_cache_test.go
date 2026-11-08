@@ -50,7 +50,7 @@ func TestCodexCacheIdentityAcrossProtocols(t *testing.T) {
 					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"id":"resp_cache","object":"response","status":"completed","model":"gpt-5.6-luna","output":[],"usage":{"input_tokens":8192,"output_tokens":4,"total_tokens":8196,"input_tokens_details":{"cached_tokens":4096}}}}` + "\n\n")), Request: req}, nil
 				})
 				ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
-				for _, scope := range []string{"tenant-a-prefix", "tenant-a-prefix", "tenant-b-prefix"} {
+				for index, scope := range []string{"tenant-a-prefix", "tenant-a-prefix", "tenant-b-prefix", "tenant-a-prefix"} {
 					operation := execution.OperationChatCompletion
 					mode := execution.RouteConverted
 					if tc.protocol == protocol.OpenAIResponses {
@@ -58,7 +58,10 @@ func TestCodexCacheIdentityAcrossProtocols(t *testing.T) {
 						mode = execution.RouteNative
 					}
 					body := []byte(tc.payload)
-					spec := execution.NewAttemptSpec(execution.AttemptSpec{RequestID: "cache-test", AttemptID: "cache-attempt", Sequence: 1, ChannelID: string(channel.Codex), RouteMode: mode, ClientProtocol: tc.protocol, Operation: operation, ClientModel: "gpt-5.6-luna", UpstreamModel: "gpt-5.6-luna", Method: http.MethodPost, Path: tc.path, Body: body, ContinuityKey: scope, Credential: execution.NewCredentialSnapshot(1, 1, 1, canonical)})
+					spec := execution.NewAttemptSpec(execution.AttemptSpec{RequestID: "cache-test", AttemptID: "cache-attempt", Sequence: 1, ChannelID: string(channel.Codex), RouteMode: mode, ClientProtocol: tc.protocol, Operation: operation, ClientModel: "gpt-5.6-luna", UpstreamModel: "gpt-5.6-luna", Method: http.MethodPost, Path: tc.path, Body: body, ContinuityKey: scope, Credential: execution.NewCredentialSnapshot(1, 1, 1, canonical).WithIdentityFingerprint("fixture-account")})
+					if index == 3 {
+						spec.Credential = spec.Credential.WithIdentityFingerprint("fixture-account-b")
+					}
 					var evidence *execution.ErrorEvidence
 					if stream {
 						evidence = adapter.ExecuteStream(ctx, spec, func(execution.StreamEvent) error { return nil }).Error
@@ -68,12 +71,12 @@ func TestCodexCacheIdentityAcrossProtocols(t *testing.T) {
 					if evidence != nil {
 						t.Fatalf("execution failed: %+v", evidence)
 					}
-					if !bytes.Equal(body, spec.Body) {
+					if !bytes.Equal(body, spec.Body) || spec.ContinuityKey != scope {
 						t.Fatal("source body mutated")
 					}
 				}
 				explicit := strings.Contains(tc.payload, "caller-cache")
-				if len(keys) != 3 || keys[0] == "" || keys[0] != keys[1] || (!explicit && keys[0] == keys[2]) || (explicit && (keys[0] != "caller-cache" || keys[2] != "caller-cache")) {
+				if len(keys) != 4 || keys[0] == "" || keys[0] != keys[1] || keys[0] == keys[3] || (!explicit && keys[0] == keys[2]) || (explicit && (keys[0] == "caller-cache" || keys[2] != keys[0])) {
 					t.Fatalf("unstable or unisolated cache keys: %v", keys)
 				}
 				for i := range keys {
@@ -88,8 +91,9 @@ func TestCodexCacheIdentityAcrossProtocols(t *testing.T) {
 
 func TestCodexCallerSessionIdentityPrecedesDerivedCacheGroup(t *testing.T) {
 	for _, stream := range []bool{false, true} {
-		for _, claude := range []bool{false, true} {
-			t.Run(fmt.Sprintf("claude=%t/stream=%t", claude, stream), func(t *testing.T) {
+		for _, source := range []string{"session", "claude-header", "claude-metadata"} {
+			claude := source != "session"
+			t.Run(fmt.Sprintf("source=%s/stream=%t", source, stream), func(t *testing.T) {
 				adapter, _, _, service, row := newAdapterFixture(t, credentialJSON("access", "refresh", time.Now().Add(time.Hour)))
 				var sessions []string
 				transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -97,7 +101,7 @@ func TestCodexCallerSessionIdentityPrecedesDerivedCacheGroup(t *testing.T) {
 					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"id":"resp_identity","object":"response","status":"completed","model":"gpt-5","output":[]}}` + "\n\n")), Request: req}, nil
 				})
 				ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
-				for _, scope := range []string{"prefix-a", "prefix-b"} {
+				for index, scope := range []string{"prefix-a", "prefix-b", "prefix-a"} {
 					spec := validSpec(t, row, service)
 					spec.ContinuityKey = scope
 					spec.Header = http.Header{"Session-Id": {"caller-session"}}
@@ -109,6 +113,13 @@ func TestCodexCallerSessionIdentityPrecedesDerivedCacheGroup(t *testing.T) {
 						spec.Body = []byte(`{"model":"gpt-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`)
 						spec.Header = http.Header{"X-Claude-Code-Session-Id": {"claude-session"}}
 					}
+					if source == "claude-metadata" {
+						spec.Header = nil
+						spec.Body = []byte(`{"model":"gpt-5","max_tokens":64,"metadata":{"user_id":"{\"session_id\":\"claude-session\"}"},"messages":[{"role":"user","content":"hello"}]}`)
+					}
+					if index == 2 {
+						spec.Credential = spec.Credential.WithIdentityFingerprint("other-account")
+					}
 					var evidence *execution.ErrorEvidence
 					if stream {
 						evidence = adapter.ExecuteStream(ctx, spec, func(execution.StreamEvent) error { return nil }).Error
@@ -119,11 +130,11 @@ func TestCodexCallerSessionIdentityPrecedesDerivedCacheGroup(t *testing.T) {
 						t.Fatalf("execute: %+v", evidence)
 					}
 				}
-				if len(sessions) != 2 || sessions[0] == "" || sessions[0] != sessions[1] {
+				if len(sessions) != 3 || sessions[0] == "" || sessions[0] != sessions[1] || sessions[0] == sessions[2] {
 					t.Fatal("caller identity overwritten by derived cache group")
 				}
-				if !claude && sessions[0] != "caller-session" {
-					t.Fatal("caller session changed")
+				if sessions[0] == "caller-session" || sessions[0] == "claude-session" {
+					t.Fatal("caller session was not account-scoped")
 				}
 			})
 		}

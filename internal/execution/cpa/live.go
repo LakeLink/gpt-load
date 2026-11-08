@@ -32,6 +32,15 @@ func (a *Adapter) OpenLive(ctx context.Context, spec execution.AttemptSpec, offe
 	if evidence != nil {
 		return execution.LiveCall{DispatchState: execution.DispatchNotSent}, modelAttemptPreparationEvidence(evidence)
 	}
+	originalHeaders := spec.Header
+	_, spec.Header, err = a.prepareCodexPrivacy(spec, nil, spec.Header)
+	if err != nil {
+		return execution.LiveCall{DispatchState: execution.DispatchNotSent}, codexPrivacyEvidence(err)
+	}
+	ctx, _, _, err = a.bindCodexRouting(ctx, spec.Credential.IdentityFingerprint(), codexRouteScope(spec, baseURL), spec.RequestID, nil, originalHeaders, nil, spec.Header)
+	if err != nil {
+		return execution.LiveCall{DispatchState: execution.DispatchNotSent}, codexPrivacyEvidence(err)
+	}
 	canonical := prepared.Canonical()
 	parsed, err := provider.ParseCredential(canonical)
 	clear(canonical)

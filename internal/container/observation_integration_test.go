@@ -142,6 +142,12 @@ type observationHost struct {
 
 func newObservationHost(t *testing.T, upstream *httptest.Server, configure ...func(*config.Config)) *observationHost {
 	t.Helper()
+	return newObservationHostWithTransport(t, upstream, upstream.Client().Transport, configure...)
+}
+
+// A nil transport exercises the production executor and its proxy/TLS path.
+func newObservationHostWithTransport(t *testing.T, upstream *httptest.Server, transport http.RoundTripper, configure ...func(*config.Config)) *observationHost {
+	t.Helper()
 	t.Setenv("AUTH_KEY", "management-test-key")
 	t.Setenv("DATA_DIR", t.TempDir())
 	t.Setenv("DATABASE_DSN", ":memory:")
@@ -159,8 +165,11 @@ func newObservationHost(t *testing.T, upstream *httptest.Server, configure ...fu
 		}); err != nil {
 			return err
 		}
+		if transport == nil {
+			return nil
+		}
 		return c.Decorate(func(original execution.Executor) execution.Executor {
-			return observationTLSExecutor{original, upstream.Client().Transport}
+			return observationTLSExecutor{original, transport}
 		})
 	})
 	if err != nil {
@@ -188,7 +197,7 @@ func newObservationHost(t *testing.T, upstream *httptest.Server, configure ...fu
 			t.Fatal(err)
 		}
 		generation := stateloader.CredentialIdentityGeneration(row.IdentityFingerprint, "codex", "subscription", json.RawMessage(`{}`))
-		if err := registry.ReplaceCredentials([]state.CredentialEntry{{ID: row.ID, GroupID: group.ID, Version: 1, IdentityGeneration: generation, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data}}); err != nil {
+		if err := registry.ReplaceCredentials([]state.CredentialEntry{{ID: row.ID, GroupID: group.ID, Version: 1, IdentityGeneration: generation, IdentityFingerprint: row.IdentityFingerprint, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data}}); err != nil {
 			t.Fatal(err)
 		}
 		params, _ := json.Marshal(map[string]string{"base_url": upstream.URL})

@@ -138,7 +138,7 @@ func TestAdapterPreservesAnthropicInstructionsOnResponsesTargets(t *testing.T) {
 					ChannelID: string(channelID), RouteMode: execution.RouteConverted,
 					ClientProtocol: protocol.Anthropic, Operation: execution.OperationChatCompletion,
 					ClientModel: model, UpstreamModel: model, Method: http.MethodPost, Path: "/v1/messages",
-					Body: body, Credential: execution.NewCredentialSnapshot(1, 1, 1, canonical),
+					Body: body, Credential: execution.NewCredentialSnapshot(1, 1, 1, canonical).WithIdentityFingerprint("fixture-account"),
 				})
 				wireBodies := make(chan []byte, 1)
 				transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {

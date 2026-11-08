@@ -162,7 +162,7 @@ func (handler *Handler) executeJevDecision(ctx context.Context, snapshot *state.
 			ref.Version,
 			ref.IdentityGeneration,
 			credential.payload,
-		),
+		).WithIdentityFingerprint(ref.IdentityFingerprint),
 		Proxy: effectiveProxy, ProxyFingerprint: proxyFingerprint,
 	})
 	release()

@@ -252,7 +252,7 @@ func newCodexBootstrapGateway(t *testing.T, baseURL string, rules []health.Error
 			Priority: int32(100 - index*100), ConnectionType: "subscription", Params: params,
 			Models: []state.ModelConfig{{ID: "gpt-5"}}, Enabled: true})
 		input.Credentials = append(input.Credentials, state.CredentialConfig{ID: row.ID, GroupID: row.GroupID, Version: row.SecretVersion, IdentityGeneration: generation, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive})
-		entries = append(entries, state.CredentialEntry{ID: row.ID, GroupID: row.GroupID, Version: row.SecretVersion, IdentityGeneration: generation, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data})
+		entries = append(entries, state.CredentialEntry{ID: row.ID, GroupID: row.GroupID, Version: row.SecretVersion, IdentityGeneration: generation, IdentityFingerprint: row.IdentityFingerprint, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data})
 	}
 	if err := registry.ReplaceCredentials(entries); err != nil {
 		t.Fatal(err)

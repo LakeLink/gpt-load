@@ -28,15 +28,16 @@ const (
 )
 
 type CredentialEntry struct {
-	Name               string // 管理面展示别名，不参与调度或身份比较。
-	ID                 uint
-	GroupID            uint
-	Version            uint64
-	IdentityGeneration uint64
-	Fingerprint        string
-	WeightManual       *int
-	Status             CredentialStatus
-	AuthState          CredentialAuthState
+	Name                string // 管理面展示别名，不参与调度或身份比较。
+	ID                  uint
+	GroupID             uint
+	Version             uint64
+	IdentityGeneration  uint64
+	Fingerprint         string
+	IdentityFingerprint string
+	WeightManual        *int
+	Status              CredentialStatus
+	AuthState           CredentialAuthState
 	// 原字段保留其他原因和未分类的历史冷却，额度恢复不猜测历史原因。
 	CooldownUntil           time.Time
 	ModelCooldowns          map[string]time.Time
@@ -71,6 +72,7 @@ type CredentialRef struct {
 	Version                 uint64
 	IdentityGeneration      uint64
 	Fingerprint             string
+	IdentityFingerprint     string
 	EncryptedValue          string
 	EncryptedProxy          string
 	ProxyFingerprint        string
@@ -620,7 +622,7 @@ func (r *CredentialRegistry) CaptureActiveCredentialRefs(groupIDs []uint) []Cred
 				Name: entry.Name,
 				ID:   entry.ID, GroupID: entry.GroupID,
 				Version: entry.Version, IdentityGeneration: entry.IdentityGeneration,
-				Fingerprint: entry.Fingerprint, EncryptedValue: entry.EncryptedValue,
+				Fingerprint: entry.Fingerprint, IdentityFingerprint: entry.IdentityFingerprint, EncryptedValue: entry.EncryptedValue,
 				EncryptedProxy: entry.EncryptedProxy, ProxyFingerprint: entry.ProxyFingerprint,
 				FailureGeneration:       entry.FailureGeneration,
 				ModelCooldownGeneration: entry.ModelCooldownGeneration,
@@ -690,7 +692,7 @@ func (r *CredentialRegistry) CredentialRef(credentialID uint) (CredentialRef, bo
 	return CredentialRef{
 		Name: entry.Name,
 		ID:   entry.ID, GroupID: entry.GroupID, Version: entry.Version,
-		IdentityGeneration: entry.IdentityGeneration, Fingerprint: entry.Fingerprint,
+		IdentityGeneration: entry.IdentityGeneration, Fingerprint: entry.Fingerprint, IdentityFingerprint: entry.IdentityFingerprint,
 		EncryptedValue: entry.EncryptedValue, EncryptedProxy: entry.EncryptedProxy,
 		ProxyFingerprint: entry.ProxyFingerprint, FailureGeneration: entry.FailureGeneration,
 		ModelCooldownGeneration: entry.ModelCooldownGeneration,
@@ -1039,7 +1041,7 @@ func (r *CredentialRegistry) BlacklistedCredentials() []CredentialRef {
 				Name: entry.Name,
 				ID:   entry.ID, GroupID: entry.GroupID,
 				Version: entry.Version, IdentityGeneration: entry.IdentityGeneration,
-				Fingerprint: entry.Fingerprint, EncryptedValue: entry.EncryptedValue,
+				Fingerprint: entry.Fingerprint, IdentityFingerprint: entry.IdentityFingerprint, EncryptedValue: entry.EncryptedValue,
 				EncryptedProxy: entry.EncryptedProxy, ProxyFingerprint: entry.ProxyFingerprint,
 				FailureGeneration:       entry.FailureGeneration,
 				ModelCooldownGeneration: entry.ModelCooldownGeneration,

@@ -650,7 +650,7 @@ func ListCodexModels(ctx context.Context, credential CodexCredential, baseURL st
 		return nil, err
 	}
 	applyCodexReadHeaders(req, credential)
-	resp, err := clientWithoutRedirects(codexOptionsHTTPClient(options)).Do(req)
+	resp, err := codexAuxiliaryHTTPClient(ctx, codexOptionsHTTPClient(options)).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -784,7 +784,7 @@ func requestCodexJSON(
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := clientWithoutRedirects(client).Do(req)
+	resp, err := codexAuxiliaryHTTPClient(ctx, client).Do(req)
 	if err != nil {
 		return AccountObservation{}, err
 	}
@@ -880,9 +880,14 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		if wrap, ok := req.Context().Value(streamBodyObserverKey{}).(func(io.ReadCloser, http.Header) io.ReadCloser); ok && wrap != nil {
 			resp.Body = wrap(resp.Body, resp.Header)
 		}
-		if t.observation != nil && t.observation.stream && t.observation.exchangeObserver != nil {
-			resp.Body = &pendingCodexSSEBody{ReadCloser: resp.Body, ctx: req.Context(),
-				exchange: sequence, path: req.URL.Path, observe: t.observation.exchangeObserver}
+		wrapDecoded, _ := req.Context().Value(decodedResponseObserverKey{}).(func(io.ReadCloser) io.ReadCloser)
+		var streamObserver func(ExchangeObservation)
+		if t.observation != nil && t.observation.stream {
+			streamObserver = t.observation.exchangeObserver
+		}
+		if streamObserver != nil || wrapDecoded != nil {
+			resp.Body = &pendingCodexSSEBody{ReadCloser: resp.Body, ctx: req.Context(), wrapDecoded: wrapDecoded,
+				exchange: sequence, path: req.URL.Path, observe: streamObserver}
 		}
 	}
 	return resp, nil
@@ -1041,7 +1046,7 @@ func exchangeToken(ctx context.Context, values url.Values, options Options) (Cod
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	client := clientWithoutRedirects(options.HTTPClient)
+	client := codexAuxiliaryHTTPClient(ctx, options.HTTPClient)
 	resp, err := client.Do(req)
 	if err != nil {
 		return CodexCredential{}, err

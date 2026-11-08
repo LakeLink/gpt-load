@@ -174,7 +174,7 @@ func TestBuildGroupCredentialEntriesUsesStableCredentialIdentity(t *testing.T) {
 	mustCreate(t, db, &group)
 	weight := 9
 	credentials := []models.Credential{
-		{GroupID: group.ID, Data: "cipher-one", Fingerprint: "fingerprint-one", Status: models.CredentialStatusActive},
+		{GroupID: group.ID, Data: "cipher-one", Fingerprint: "fingerprint-one", IdentityFingerprint: "stored-legacy-identity", Status: models.CredentialStatusActive},
 		{GroupID: group.ID, Data: "cipher-two", Fingerprint: "fingerprint-two", Status: models.CredentialStatusDisabled, WeightManual: &weight, SecretVersion: 99},
 	}
 	for index := range credentials {
@@ -194,7 +194,7 @@ func TestBuildGroupCredentialEntriesUsesStableCredentialIdentity(t *testing.T) {
 		t.Fatalf("entries = %#v", entries)
 	}
 	if entries[0].Version == 0 || entries[0].IdentityGeneration == 0 ||
-		entries[0].Fingerprint != credentials[0].Fingerprint || entries[0].EncryptedValue != credentials[0].Data {
+		entries[0].IdentityFingerprint != credentials[0].IdentityFingerprint || entries[0].Fingerprint != credentials[0].Fingerprint || entries[0].EncryptedValue != credentials[0].Data {
 		t.Fatalf("first entry identity = %#v", entries[0])
 	}
 	if entries[1].Version != 99 || entries[1].IdentityGeneration == entries[0].IdentityGeneration ||

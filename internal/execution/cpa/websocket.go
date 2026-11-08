@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gpt-load/internal/channel"
+	"gpt-load/internal/codexprivacy"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/execution/wsnative"
 	"gpt-load/internal/protocol"
@@ -24,6 +25,7 @@ type websocketProvider interface {
 
 // OpenWebsocket 使用既有凭据刷新和网络准备，Session 仍由单个下游连接拥有。
 func (a *Adapter) OpenWebsocket(ctx context.Context, spec execution.AttemptSpec) (execution.WebsocketSession, execution.WebsocketResult) {
+	originalHeaders := spec.Header.Clone()
 	result := execution.WebsocketResult{DispatchState: execution.DispatchNotSent}
 	reject := func() (execution.WebsocketSession, execution.WebsocketResult) {
 		result.Error = requestValidationEvidence(errors.New("unsupported native websocket request"))
@@ -69,6 +71,16 @@ func (a *Adapter) OpenWebsocket(ctx context.Context, spec execution.AttemptSpec)
 		result.Error = evidence
 		return nil, result
 	}
+	identity, err := a.privacy.Resolve(spec.Credential.IdentityFingerprint())
+	if err != nil {
+		result.Error = codexPrivacyEvidence(err)
+		return nil, result
+	}
+	_, spec.Header, err = identity.Prepare(nil, spec.Header)
+	if err != nil {
+		result.Error = codexPrivacyEvidence(err)
+		return nil, result
+	}
 	canonical := prepared.Canonical()
 	credential, err := provider.ParseCredential(canonical)
 	clear(canonical)
@@ -76,7 +88,7 @@ func (a *Adapter) OpenWebsocket(ctx context.Context, spec execution.AttemptSpec)
 		return reject()
 	}
 	observationSpec := execution.AttemptSpec{Credential: execution.NewCredentialSnapshot(spec.Credential.ID, spec.Credential.Version, spec.Credential.IdentityGeneration, nil)}
-	observed := &observedWebsocketSession{adapter: a, spec: observationSpec}
+	observed := &observedWebsocketSession{adapter: a, spec: observationSpec, privacy: identity, routeScope: codexRouteScope(spec, baseURL), routeOwner: spec.Credential.IdentityFingerprint(), originalHeaders: originalHeaders}
 	s, err := opener.openWebsocket(spec, credential, baseURL, settings.URL, observed.observeHeaders)
 	if err != nil {
 		result.Error = codexWebsocketEvidence(ctx, err)
@@ -87,6 +99,10 @@ func (a *Adapter) OpenWebsocket(ctx context.Context, spec execution.AttemptSpec)
 }
 
 type observedWebsocketSession struct {
+	privacy         codexprivacy.Identity
+	routeScope      string
+	routeOwner      string
+	originalHeaders http.Header
 	execution.WebsocketSession
 	adapter   *Adapter
 	spec      execution.AttemptSpec
@@ -102,10 +118,37 @@ func (s *observedWebsocketSession) Interrupt(ctx context.Context, payload []byte
 }
 
 func (s *observedWebsocketSession) ExecuteTurn(ctx context.Context, payload []byte, emit func(context.Context, []byte) error) execution.WebsocketResult {
+	original := payload
+	prepared, headers, err := s.privacy.Prepare(payload, s.originalHeaders)
+	if err != nil {
+		return execution.WebsocketResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
+	}
+	payload = prepared
+	requestID := ""
 	if spec, ok := execution.WebsocketAttempt(ctx); ok {
+		requestID = spec.RequestID
 		ctx = codex.WithWSTurnObserver(ctx, codexExchangeObserver(s.adapter.exchangeObserver(spec, true)))
 	}
+	// Current message metadata takes precedence over a connection's historical
+	// handshake turn. Header-only clients retain their explicit turn scope.
+	turnHeaders := s.originalHeaders
+	if current, scopeErr := codexprivacy.OriginalTurn(original, nil, requestID); scopeErr != nil {
+		return execution.WebsocketResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(scopeErr)}
+	} else if strings.HasPrefix(current, "turn/") {
+		turnHeaders = s.originalHeaders.Clone()
+		for name := range turnHeaders {
+			switch strings.ToLower(name) {
+			case "x-codex-turn-id", "turn-id", "turn_id", "x-codex-turn-metadata":
+				delete(turnHeaders, name)
+			}
+		}
+	}
+	ctx, payload, turn, err := s.adapter.bindCodexRouting(ctx, s.routeOwner, s.routeScope, requestID, original, turnHeaders, payload, headers)
+	if err != nil {
+		return execution.WebsocketResult{DispatchState: execution.DispatchNotSent, Error: codexPrivacyEvidence(err)}
+	}
 	return s.WebsocketSession.ExecuteTurn(ctx, payload, func(ctx context.Context, event []byte) error {
+		turn.ObserveMetadata(event)
 		observedAt := time.Now()
 		windows := codex.NormalizeWebsocketQuotaWindows(event, observedAt)
 		credits := codex.NormalizeWebsocketCredits(event, observedAt)

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"gpt-load/internal/codexprivacy"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/gateway"
 	"gpt-load/internal/state"
@@ -154,8 +155,18 @@ func TestCodexGatewayRequestIdentity(t *testing.T) {
 						t.Errorf("%s = %q, want %q", name, got, want)
 					}
 				}
-				if test.wantSession != "" && captured.Get("Session-Id") != test.wantSession {
-					t.Errorf("Session-Id = %q, want %q", captured.Get("Session-Id"), test.wantSession)
+				if test.wantSession != "" {
+					identity, err := codexprivacy.NewCache().Resolve(spec.Credential.IdentityFingerprint())
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, expected, err := identity.Prepare(nil, http.Header{"Session-Id": {test.wantSession}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if captured.Get("Session-Id") != expected.Get("Session-Id") {
+						t.Errorf("Session-Id = %q, want %q", captured.Get("Session-Id"), expected.Get("Session-Id"))
+					}
 				}
 				if captured.Get("Session_id") != "" {
 					t.Error("upstream retained the underscore session alias")

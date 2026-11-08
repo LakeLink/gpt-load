@@ -199,7 +199,8 @@ type CredentialSnapshot struct {
 	Version            uint64 `json:"version"`
 	IdentityGeneration uint64 `json:"identity_generation"`
 
-	data []byte
+	data                []byte
+	identityFingerprint string
 }
 
 // NewCredentialSnapshot copies the credential data into a snapshot.
@@ -211,6 +212,15 @@ func NewCredentialSnapshot(id uint, version, identityGeneration uint64, data []b
 		data:               cloneBytes(data),
 	}
 }
+
+// WithIdentityFingerprint freezes the persisted account identity for this attempt.
+// The fingerprint stays private and is excluded from observation JSON.
+func (c CredentialSnapshot) WithIdentityFingerprint(fingerprint string) CredentialSnapshot {
+	c.identityFingerprint = fingerprint
+	return c
+}
+
+func (c CredentialSnapshot) IdentityFingerprint() string { return c.identityFingerprint }
 
 // Data returns an independent copy of the secret credential data.
 func (c CredentialSnapshot) Data() []byte {

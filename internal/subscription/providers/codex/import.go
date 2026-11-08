@@ -12,7 +12,7 @@ func (err *TokenEndpointError) HTTPStatusCode() int { return err.StatusCode }
 func (err *UpstreamHTTPError) HTTPStatusCode() int  { return err.StatusCode }
 
 func (*codexDriver) ImportCredential(ctx context.Context, raw []byte) (subscriptionruntime.Credential, error) {
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, "")
 	if err != nil {
 		return subscriptionruntime.Credential{}, err
 	}

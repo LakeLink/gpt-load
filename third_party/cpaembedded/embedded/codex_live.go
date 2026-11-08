@@ -15,8 +15,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
-	xproxy "golang.org/x/net/proxy"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 const (
@@ -56,17 +57,18 @@ func (err *CodexLiveHTTPError) Error() string {
 // CodexLiveSession retains only the selected access token, account and network
 // target. It does not own an account pool, refresh token or business retry.
 type CodexLiveSession struct {
-	credential CodexCredential
-	authID     string
-	baseURL    string
-	proxyURL   string
-	sideband   string
-	callID     string
-	headers    http.Header
-	doHTTP     func(context.Context, *http.Request) (*http.Response, error)
-	mu         sync.Mutex
-	connection *websocket.Conn
-	closed     bool
+	headerHooks cliproxyexecutor.CodexHeaderHooks
+	credential  CodexCredential
+	authID      string
+	baseURL     string
+	proxyURL    string
+	sideband    string
+	callID      string
+	headers     http.Header
+	doHTTP      func(context.Context, *http.Request) (*http.Response, error)
+	mu          sync.Mutex
+	connection  *websocket.Conn
+	closed      bool
 }
 
 func StartCodexLive(ctx context.Context, input CodexLiveRequest) (CodexLiveCall, error) {
@@ -93,10 +95,11 @@ func StartCodexLive(ctx context.Context, input CodexLiveRequest) (CodexLiveCall,
 	auth.ProxyURL = proxyURL
 	executor := NewCodexHTTPExecutor()
 	original := ExecuteRequest{Headers: input.Headers.Clone(), ProxyURL: proxyURL, ProxyFromEnvironment: input.ProxyFromEnvironment}
+	headerHooks := cliproxyexecutor.CodexHeaderHooksFromContext(ctx)
 	doHTTP := input.doHTTP
 	if doHTTP == nil {
 		doHTTP = func(ctx context.Context, request *http.Request) (*http.Response, error) {
-			execCtx := executor.executionContext(ctx, auth, nil, input.ProxyFromEnvironment, &original)
+			execCtx := executor.executionContext(cliproxyexecutor.WithCodexHeaderHooks(ctx, headerHooks), auth, nil, input.ProxyFromEnvironment, &original)
 			return executor.inner.HttpRequest(execCtx, authWithoutProxyURL(auth), request)
 		}
 	}
@@ -123,7 +126,7 @@ func StartCodexLive(ctx context.Context, input CodexLiveRequest) (CodexLiveCall,
 	session := &CodexLiveSession{
 		credential: CodexCredential{AccessToken: input.Credential.AccessToken, AccountID: input.Credential.AccountID},
 		authID:     input.CredentialID, baseURL: input.BaseURL, proxyURL: proxyURL,
-		sideband: sidebandBase, callID: callID, headers: input.Headers.Clone(), doHTTP: doHTTP,
+		sideband: sidebandBase, callID: callID, headers: input.Headers.Clone(), doHTTP: doHTTP, headerHooks: headerHooks,
 	}
 	call := CodexLiveCall{CallID: callID, Header: http.Header{
 		"Location":          {response.Header.Get("Location")},
@@ -158,7 +161,7 @@ func codexLiveResponseSDP(body []byte, contentType string) (string, error) {
 
 func liveCodexHeaders(source http.Header, credential CodexCredential) http.Header {
 	headers := make(http.Header)
-	for _, name := range []string{"OpenAI-Alpha", "X-Session-Id", "Session-Id", "Thread-Id", "Originator", "OpenAI-Safety-Identifier", "OpenAI-Organization", "OpenAI-Project", "X-Oai-Attestation"} {
+	for _, name := range []string{"X-Codex-Installation-Id", "X-Codex-Turn-Metadata", "OpenAI-Alpha", "X-Session-Id", "Session-Id", "Thread-Id", "Originator", "OpenAI-Safety-Identifier", "OpenAI-Organization", "OpenAI-Project", "X-Oai-Attestation"} {
 		for _, value := range source.Values(name) {
 			headers.Add(name, value)
 		}
@@ -237,11 +240,24 @@ func (session *CodexLiveSession) DialSideband(ctx context.Context, style string,
 	} else if parsed.Scheme == "http" {
 		parsed.Scheme = "ws"
 	}
-	dialer, err := liveCodexDialer(session.proxyURL, parsed, protocols, http.ProxyFromEnvironment)
+	dialer, err := liveCodexDialer(session.authID, session.credential, session.proxyURL, parsed, protocols, http.ProxyFromEnvironment)
 	if err != nil {
 		return nil, 0, err
 	}
-	connection, response, err := dialer.DialContext(ctx, parsed.String(), liveCodexHeaders(session.headers, session.credential))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	request.Header = liveCodexHeaders(session.headers, session.credential)
+	if session.headerHooks.Prepare != nil {
+		if err := session.headerHooks.Prepare(request); err != nil {
+			return nil, 0, err
+		}
+	}
+	connection, response, err := dialer.DialContext(ctx, parsed.String(), request.Header)
+	if session.headerHooks.Observe != nil && response != nil {
+		session.headerHooks.Observe(parsed, response.Header.Clone())
+	}
 	status := 0
 	if response != nil {
 		status = response.StatusCode
@@ -274,53 +290,13 @@ func (session *CodexLiveSession) ReleaseSideband(connection *websocket.Conn) {
 	session.mu.Unlock()
 }
 
-func liveCodexDialer(proxyURL string, target *url.URL, protocols []string, proxyFromEnvironment func(*http.Request) (*url.URL, error)) (*websocket.Dialer, error) {
-	dialer := &websocket.Dialer{HandshakeTimeout: 10 * time.Second, Subprotocols: append([]string(nil), protocols...)}
-	if proxyURL == "" {
-		if target == nil || proxyFromEnvironment == nil {
-			return nil, errors.New("codex live proxy target unavailable")
-		}
-		proxyTarget := *target
-		switch proxyTarget.Scheme {
-		case "ws":
-			proxyTarget.Scheme = "http"
-		case "wss":
-			proxyTarget.Scheme = "https"
-		default:
-			return nil, errors.New("invalid codex live sideband target")
-		}
-		selected, err := proxyFromEnvironment(&http.Request{Method: http.MethodGet, URL: &proxyTarget})
-		if err != nil {
-			return nil, err
-		}
-		if selected == nil {
-			return dialer, nil
-		}
-		proxyURL = selected.String()
-	}
-	setting, err := proxyutil.Parse(proxyURL)
+func liveCodexDialer(accountID string, credential CodexCredential, proxyURL string, target *url.URL, protocols []string, proxyFromEnvironment func(*http.Request) (*url.URL, error)) (*websocket.Dialer, error) {
+	dialer, err := helps.NewCodexWebsocketDialer(context.Background(), nil, &cliproxyauth.Auth{ID: accountID, Provider: ProviderCodex, ProxyURL: proxyURL, Metadata: map[string]any{"access_token": credential.AccessToken, "account_id": credential.AccountID}}, target, proxyFromEnvironment)
 	if err != nil {
 		return nil, err
 	}
-	if setting.Mode == proxyutil.ModeDirect {
-		return dialer, nil
-	}
-	if setting.Mode != proxyutil.ModeProxy {
-		return nil, errors.New("invalid codex live proxy")
-	}
-	if setting.URL.Scheme == "http" {
-		dialer.Proxy = http.ProxyURL(setting.URL)
-		return dialer, nil
-	}
-	proxyDialer, _, err := proxyutil.BuildDialer(proxyURL)
-	if err != nil {
-		return nil, err
-	}
-	contextDialer, ok := proxyDialer.(xproxy.ContextDialer)
-	if !ok {
-		return nil, errors.New("codex live proxy does not support cancellation")
-	}
-	dialer.NetDialContext = contextDialer.DialContext
+	dialer.HandshakeTimeout = 10 * time.Second
+	dialer.Subprotocols = append([]string(nil), protocols...)
 	return dialer, nil
 }
 

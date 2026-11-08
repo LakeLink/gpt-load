@@ -293,7 +293,7 @@ func (handler *Handler) createCodexLive(c *gin.Context, request *dataPlaneReques
 			ClientProtocol: protocol.CodexLive, Operation: execution.OperationLiveCall,
 			RouteRequirement: execution.RouteRequirementNative, ChannelID: string(selection.ChannelID),
 			RouteMode: execution.RouteNative, TargetConfig: selection.ResolvedTarget.TargetConfig,
-			Credential: execution.NewCredentialSnapshot(ref.ID, ref.Version, ref.IdentityGeneration, credential.payload),
+			Credential: execution.NewCredentialSnapshot(ref.ID, ref.Version, ref.IdentityGeneration, credential.payload).WithIdentityFingerprint(ref.IdentityFingerprint),
 			Proxy:      proxy, ProxyFingerprint: fingerprint}
 		spec, err := newExecutionAttemptSpec(input)
 		if err != nil {

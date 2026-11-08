@@ -20,7 +20,7 @@ func observeSubscription(ctx context.Context, credential Credential, apiRoot str
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, credentialIdentity(credential))
 	if err != nil {
 		return result
 	}

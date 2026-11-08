@@ -1448,7 +1448,7 @@ func (handler *Handler) executeAttempts(
 				ref.Version,
 				ref.IdentityGeneration,
 				normalizedCredential.payload,
-			),
+			).WithIdentityFingerprint(ref.IdentityFingerprint),
 			Proxy:                  effectiveProxy,
 			ProxyFingerprint:       proxyFingerprint,
 			ForceCredentialRefresh: forceCredentialRefresh,

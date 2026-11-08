@@ -23,7 +23,7 @@ func TestCodexLiveHTTPSProxyUsesCancelableDialerForExplicitAndEnvironmentSetting
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resolveCalls := 0
-			dialer, err := liveCodexDialer(test.configuredProxy, target, nil, func(request *http.Request) (*url.URL, error) {
+			dialer, err := liveCodexDialer("test-account", CodexCredential{AccessToken: "test-access", AccountID: "test-account"}, test.configuredProxy, target, nil, func(request *http.Request) (*url.URL, error) {
 				resolveCalls++
 				if request.URL.Scheme != "https" || request.URL.Host != target.Host {
 					t.Fatalf("environment proxy request URL = %s", request.URL)

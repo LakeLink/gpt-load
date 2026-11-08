@@ -136,11 +136,11 @@ func TestCPAConvertedAnthropicStreamUsesFinalUsage(t *testing.T) {
 					ClientProtocol: protocol.Anthropic, Operation: execution.OperationChatCompletion,
 					ChannelID: provider, RouteMode: execution.RouteConverted, TargetConfig: target,
 					Credential: execution.NewCredentialSnapshot(row.ID, row.SecretVersion,
-						stateloader.CredentialIdentityGeneration(row.IdentityFingerprint, provider, "subscription", json.RawMessage(`{}`)), canonical),
+						stateloader.CredentialIdentityGeneration(row.IdentityFingerprint, provider, "subscription", json.RawMessage(`{}`)), canonical).WithIdentityFingerprint(row.IdentityFingerprint),
 					ExternalModel: model, UpstreamModelID: model, ObserveUsage: true,
 				}
 				downstream := httptest.NewRecorder()
-				result := gateway.NewExecutionForwarder(adapter).ForwardStream(t.Context(), input, downstream)
+				result := gateway.NewExecutionForwarder(adapter).ForwardStream(context.WithValue(t.Context(), "cliproxy.roundtripper", server.Client().Transport), input, downstream)
 				if result.Err != nil || result.StatusCode != http.StatusOK {
 					t.Fatalf("ForwardStream() = %v, status=%d; wire=%s", result.Err, result.StatusCode, downstream.Body)
 				}

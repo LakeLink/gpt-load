@@ -112,7 +112,7 @@ func TestCodexRefreshWithoutNewIDTokenPreservesKnownIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			refreshed, err := driver.Refresh(t.Context(), current)
+			refreshed, err := driver.Refresh(codexTransportContext(t), current)
 			if err != nil {
 				t.Fatal(err)
 			}

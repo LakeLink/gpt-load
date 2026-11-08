@@ -50,7 +50,8 @@ func TestWebsocketRecordsCreditOnlyEventsBeforeForwarding(t *testing.T) {
 		session := &observedWebsocketSession{
 			WebsocketSession: &quotaEventSession{event: event}, adapter: adapter, spec: validSpec(t, row, crypt),
 		}
-		result := session.ExecuteTurn(t.Context(), nil, func(_ context.Context, forwarded []byte) error {
+		prepareObservedQuotaSession(t, session)
+		result := session.ExecuteTurn(execution.WithWebsocketAttempt(t.Context(), session.spec), session.spec.Body, func(_ context.Context, forwarded []byte) error {
 			if !bytes.Equal(event, forwarded) {
 				t.Fatal("credit observation changed the forwarded event")
 			}

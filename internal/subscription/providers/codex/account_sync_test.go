@@ -67,7 +67,7 @@ func TestAccountSyncStartsIndependentQueriesTogether(t *testing.T) {
 	credential := syncTestCredential(t)
 	done := make(chan error, 1)
 	go func() {
-		result, err := newCodexDriver().Observe(t.Context(), credential, subscriptionruntime.NewTarget([]byte(`{"base_url":"https://relay.example/tenant"}`)))
+		result, err := newCodexDriver().Observe(codexTransportContext(t), credential, subscriptionruntime.NewTarget([]byte(`{"base_url":"https://relay.example/tenant"}`)))
 		if err == nil {
 			var payload struct {
 				Subscription struct {
@@ -140,7 +140,7 @@ func TestAccountSyncKeepsQuotaWhenSubscriptionIsUnavailable(t *testing.T) {
 					return syncTestResponse(request, 404, "{}"), nil
 				}
 			})
-			result, err := newCodexDriver().Observe(t.Context(), syncTestCredential(t), subscriptionruntime.NewTarget(nil))
+			result, err := newCodexDriver().Observe(codexTransportContext(t), syncTestCredential(t), subscriptionruntime.NewTarget(nil))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestAccountSyncCancelsOptionalQueriesWhenQuotaFails(t *testing.T) {
 				cancelled <- struct{}{}
 				return nil, request.Context().Err()
 			})
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			ctx, cancel := context.WithTimeout(codexTransportContext(t), time.Second)
 			defer cancel()
 			_, err := newCodexDriver().Observe(ctx, syncTestCredential(t), subscriptionruntime.NewTarget(nil))
 			if test.status == http.StatusOK {

@@ -211,8 +211,8 @@ func TestAdapterLeavesNonDowngradedResponsesStoreUnchanged(t *testing.T) {
 	spec.Body = []byte(`{"model":"gpt-5","input":"hello","store":true}`)
 
 	result := adapter.Execute(t.Context(), spec)
-	if result.Error != nil || !bytes.Equal(fake.request.Payload, spec.Body) ||
-		!bytes.Equal(result.Body, responseBody) {
+	if result.Error != nil || !bytes.Equal(fake.request.OriginalRequest, spec.Body) ||
+		!bytes.Contains(fake.request.Payload, []byte(`"store":true`)) || !bytes.Equal(result.Body, responseBody) {
 		t.Fatalf("request/result = %s / %s; error=%#v", fake.request.Payload, result.Body, result.Error)
 	}
 }
@@ -475,8 +475,18 @@ func TestAdapterExecutesCodexImagesWithFixedCanonicalPath(t *testing.T) {
 			t.Fatalf("control field %q reached CPA: %s", field, fake.request.Payload)
 		}
 	}
-	if !bytes.Equal(fake.request.OriginalRequest, fake.request.Payload) {
-		t.Fatalf("CPA original request retained unsanitized body: %s / %s", fake.request.OriginalRequest, fake.request.Payload)
+	var original map[string]json.RawMessage
+	if err := json.Unmarshal(fake.request.OriginalRequest, &original); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := original["api_key"]; ok {
+		t.Fatal("original request retained control field")
+	}
+	if _, ok := original["client_metadata"]; ok {
+		t.Fatal("original request retained attempt privacy metadata")
+	}
+	if len(body["client_metadata"]) == 0 {
+		t.Fatal("attempt installation metadata missing")
 	}
 	if result.Usage != nil {
 		t.Fatalf("Images usage = %#v, want nil", result.Usage)
@@ -1633,7 +1643,7 @@ func newSubscriptionAdapterFixture(
 	}
 	registry := state.NewCredentialRegistry()
 	identityGeneration := stateloader.CredentialIdentityGeneration(row.IdentityFingerprint, group.ChannelID, string(group.ConnectionType), json.RawMessage(group.Params))
-	if err := registry.ReplaceCredentials([]state.CredentialEntry{{ID: row.ID, GroupID: group.ID, Version: 1, IdentityGeneration: identityGeneration, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data}}); err != nil {
+	if err := registry.ReplaceCredentials([]state.CredentialEntry{{ID: row.ID, GroupID: group.ID, Version: 1, IdentityGeneration: identityGeneration, IdentityFingerprint: row.IdentityFingerprint, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data}}); err != nil {
 		t.Fatal(err)
 	}
 	channels := channel.NewRegistry()
@@ -1658,7 +1668,7 @@ func validSpec(t *testing.T, row models.Credential, keyService encryption.Servic
 	}
 	identityGeneration := stateloader.CredentialIdentityGeneration(
 		row.IdentityFingerprint, "codex", "subscription", json.RawMessage(`{}`))
-	return execution.NewAttemptSpec(execution.AttemptSpec{RequestID: "request-1", AttemptID: "attempt-1", Sequence: 1, ChannelID: "codex", RouteMode: execution.RouteNative, ClientProtocol: protocol.OpenAIResponses, Operation: execution.OperationResponsesCreate, ClientModel: "gpt-5", UpstreamModel: "gpt-5", Method: http.MethodPost, Path: "/v1/responses", Body: []byte(`{"model":"gpt-5","input":"hi"}`), TargetConfig: json.RawMessage(`{}`), Credential: execution.NewCredentialSnapshot(row.ID, row.SecretVersion, identityGeneration, []byte(plaintext))})
+	return execution.NewAttemptSpec(execution.AttemptSpec{RequestID: "request-1", AttemptID: "attempt-1", Sequence: 1, ChannelID: "codex", RouteMode: execution.RouteNative, ClientProtocol: protocol.OpenAIResponses, Operation: execution.OperationResponsesCreate, ClientModel: "gpt-5", UpstreamModel: "gpt-5", Method: http.MethodPost, Path: "/v1/responses", Body: []byte(`{"model":"gpt-5","input":"hi"}`), TargetConfig: json.RawMessage(`{}`), Credential: execution.NewCredentialSnapshot(row.ID, row.SecretVersion, identityGeneration, []byte(plaintext)).WithIdentityFingerprint(row.IdentityFingerprint)})
 }
 
 func TestAdapterDoesNotInventMissingUnaryModel(t *testing.T) {
@@ -1676,5 +1686,23 @@ func TestUnaryProviderSuccessKeepsTokenCountModelContract(t *testing.T) {
 	result := unaryProviderSuccess(nil, spec, response)
 	if result.Model != "requested" || result.Error != nil {
 		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestAdapterRejectsMissingAccountPrivacyIdentity(t *testing.T) {
+	adapter, _, _, keys, row := newAdapterFixture(t, credentialJSON("access", "refresh", time.Now().Add(time.Hour)))
+	executor := &fakeExecutor{}
+	setCodexExecutor(t, adapter, executor)
+	spec := validSpec(t, row, keys)
+	spec.Credential = spec.Credential.WithIdentityFingerprint("")
+	unary := adapter.Execute(t.Context(), spec)
+	stream := adapter.ExecuteStream(t.Context(), spec, func(execution.StreamEvent) error { t.Fatal("unexpected stream event"); return nil })
+	for _, err := range []*execution.ErrorEvidence{unary.Error, stream.Error} {
+		if err == nil || err.Code != "codex_account_identity_missing" || err.ScopeHint != execution.ErrorScopeCredential {
+			t.Fatalf("identity preparation failure=%+v", err)
+		}
+	}
+	if executor.calls != 0 || unary.DispatchState != execution.DispatchNotSent || stream.DispatchState != execution.DispatchNotSent {
+		t.Fatal("missing identity reached execution")
 	}
 }

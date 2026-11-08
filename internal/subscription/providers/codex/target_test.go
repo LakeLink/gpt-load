@@ -85,7 +85,7 @@ func TestBusinessTargetPreservesNativeEndpoints(t *testing.T) {
 						}
 						return &http.Response{StatusCode: http.StatusTeapot, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
 					})
-					if err := op.call(t.Context(), credential, target); err == nil {
+					if err := op.call(codexTransportContext(t), credential, target); err == nil {
 						t.Fatal("unexpected success from failed upstream")
 					}
 					var want []string
@@ -112,4 +112,9 @@ func TestBusinessTargetPreservesNativeEndpoints(t *testing.T) {
 			}
 		})
 	}
+}
+
+func codexTransportContext(t *testing.T) context.Context {
+	t.Helper()
+	return context.WithValue(t.Context(), "cliproxy.roundtripper", http.DefaultTransport)
 }

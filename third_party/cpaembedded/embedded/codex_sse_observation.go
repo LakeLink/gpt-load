@@ -35,19 +35,20 @@ type codexSSEObservationBody struct {
 // of the original response body, including its close error.
 type pendingCodexSSEBody struct {
 	io.ReadCloser
-	ctx      context.Context
-	observe  func(ExchangeObservation)
-	exchange uint64
-	path     string
-	once     sync.Once
-	err      error
-	attached atomic.Bool
+	ctx         context.Context
+	observe     func(ExchangeObservation)
+	exchange    uint64
+	path        string
+	once        sync.Once
+	err         error
+	attached    atomic.Bool
+	wrapDecoded func(io.ReadCloser) io.ReadCloser
 }
 
 func (body *pendingCodexSSEBody) Close() error {
 	body.once.Do(func() {
 		body.err = body.ReadCloser.Close()
-		if !body.attached.Load() {
+		if !body.attached.Load() && body.observe != nil {
 			// Decoder setup closes the source on failure before a decoded body
 			// exists. Settle the initialized stream's explicit zero totals.
 			observation := &codexSSEObservationBody{ctx: body.ctx, observe: body.observe, exchange: body.exchange, path: body.path}
@@ -59,6 +60,12 @@ func (body *pendingCodexSSEBody) Close() error {
 
 func (body *pendingCodexSSEBody) ObserveDecodedHTTPResponseBody(decoded io.ReadCloser) io.ReadCloser {
 	body.attached.Store(true)
+	if body.wrapDecoded != nil {
+		decoded = body.wrapDecoded(decoded)
+	}
+	if body.observe == nil {
+		return decoded
+	}
 	return &codexSSEObservationBody{
 		ctx: body.ctx, wire: body, decoded: decoded,
 		observe: body.observe, exchange: body.exchange, path: body.path,

@@ -1,12 +1,17 @@
 package embedded
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/gptload-embedded/modelcatalog"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/tidwall/sjson"
 )
 
 // 沿用 CPA 的客户端标识格式，版本统一由 GPT-Load 的已验证版本集固定。
@@ -73,7 +78,42 @@ func (transport codexHeadersRoundTripper) RoundTrip(request *http.Request) (*htt
 			request.Header.Set("Session-Id", session)
 		}
 	}
-	return transport.base.RoundTrip(request)
+	// The host freezes this account identity before constructing the CPA request.
+	// Reassert it after CPA and model-specific header overrides.
+	if installation := transport.source.Get("X-Codex-Installation-Id"); installation != "" {
+		request.Header.Set("X-Codex-Installation-Id", installation)
+		// Converted protocols may reconstruct the Responses body. Restore this
+		// required account installation copy after translation, without deriving IDs
+		// again or touching message/tool fields.
+		if request.Body != nil && (strings.HasSuffix(request.URL.Path, "/responses") || strings.HasSuffix(request.URL.Path, "/alpha/search")) {
+			body, err := io.ReadAll(request.Body)
+			closeErr := request.Body.Close()
+			if err != nil || closeErr != nil {
+				return nil, errors.New("Codex privacy: read final request metadata")
+			}
+			body, err = sjson.SetBytes(body, "client_metadata.x-codex-installation-id", installation)
+			if err != nil {
+				return nil, errors.New("Codex privacy: write final request metadata")
+			}
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			request.ContentLength = int64(len(body))
+			request.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+		}
+		if metadata := transport.source.Values("X-Codex-Turn-Metadata"); len(metadata) > 0 {
+			request.Header["X-Codex-Turn-Metadata"] = append([]string(nil), metadata...)
+		}
+	}
+	hooks := cliproxyexecutor.CodexHeaderHooksFromContext(request.Context())
+	if hooks.Prepare != nil {
+		if err := hooks.Prepare(request); err != nil {
+			return nil, err
+		}
+	}
+	response, err := transport.base.RoundTrip(request)
+	if hooks.Observe != nil && response != nil {
+		hooks.Observe(request.URL, response.Header.Clone())
+	}
+	return response, err
 }
 
 func normalizedCodexHeaders(headers http.Header) http.Header {

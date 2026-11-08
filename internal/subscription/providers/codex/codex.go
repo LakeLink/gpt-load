@@ -13,6 +13,7 @@ import (
 
 	cpaembedded "github.com/router-for-me/CLIProxyAPI/v8/gptload-embedded/embedded"
 
+	"gpt-load/internal/outboundproxy"
 	subscriptionruntime "gpt-load/internal/subscription/runtime"
 )
 
@@ -152,7 +153,7 @@ func CompleteBrowserAuthorization(
 	ctx context.Context,
 	completion BrowserAuthorizationCompletion,
 ) (Credential, error) {
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, "")
 	if err != nil {
 		return Credential{}, err
 	}
@@ -170,7 +171,7 @@ func CompleteBrowserAuthorization(
 
 // RefreshCredentialOnce performs exactly one token refresh without persistence or retries.
 func RefreshCredentialOnce(ctx context.Context, current Credential) (Credential, error) {
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, credentialIdentity(current))
 	if err != nil {
 		return Credential{}, err
 	}
@@ -187,7 +188,7 @@ func ListModels(ctx context.Context, credential Credential, apiRoot string) ([]M
 	if err != nil {
 		return nil, err
 	}
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, credentialIdentity(credential))
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +209,7 @@ func ObserveAccount(ctx context.Context, credential Credential, apiRoot string) 
 	if err != nil {
 		return AccountObservation{}, err
 	}
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, credentialIdentity(credential))
 	if err != nil {
 		return AccountObservation{}, err
 	}
@@ -225,7 +226,7 @@ func ObserveResetCredits(ctx context.Context, credential Credential, apiRoot str
 	if err != nil {
 		return AccountObservation{}, err
 	}
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, credentialIdentity(credential))
 	if err != nil {
 		return AccountObservation{}, err
 	}
@@ -243,7 +244,7 @@ func ConsumeResetCredit(ctx context.Context, credential Credential, apiRoot, red
 	if err != nil {
 		return AccountObservation{}, err
 	}
-	options, err := codexOptions(ctx)
+	options, err := codexOptions(ctx, credentialIdentity(credential))
 	if err != nil {
 		return AccountObservation{}, err
 	}
@@ -254,12 +255,20 @@ func ConsumeResetCredit(ctx context.Context, credential Credential, apiRoot, red
 	return AccountObservation{Payload: append([]byte(nil), value.Payload...), Header: value.Header.Clone()}, nil
 }
 
-func codexOptions(ctx context.Context) (cpaembedded.Options, error) {
-	client, err := subscriptionruntime.HTTPClient(ctx)
-	if err != nil {
-		return cpaembedded.Options{}, err
+func codexOptions(ctx context.Context, account string) (cpaembedded.Options, error) {
+	proxyURL := "direct"
+	fromEnvironment := true
+	if network, ok := subscriptionruntime.NetworkFromContext(ctx); ok {
+		effective, err := outboundproxy.NormalizeEffective(network.Proxy)
+		if err != nil {
+			return cpaembedded.Options{}, errors.New("invalid subscription proxy config")
+		}
+		fromEnvironment = effective.Config.Mode == outboundproxy.ModeEnvironment
+		if effective.Config.Mode == outboundproxy.ModeCustom {
+			proxyURL = effective.Config.URL
+		}
 	}
-	return cpaembedded.Options{HTTPClient: client}, nil
+	return cpaembedded.Options{HTTPClient: cpaembedded.NewCodexAuxiliaryHTTPClient(ctx, account, proxyURL, fromEnvironment)}, nil
 }
 
 func normalizeUpstreamError(err error) error {

@@ -170,7 +170,10 @@ func TestUpstreamCountTokensUnsupportedClassification(t *testing.T) {
 
 func TestCredentialSnapshotProtectsSecretDataAndJSON(t *testing.T) {
 	secret := []byte(`{"api_key":"sk-secret-value"}`)
-	credential := NewCredentialSnapshot(41, 7, 3, secret)
+	credential := NewCredentialSnapshot(41, 7, 3, secret).WithIdentityFingerprint("persisted-identity")
+	if credential.Clone().IdentityFingerprint() != "persisted-identity" {
+		t.Fatal("clone lost frozen identity fingerprint")
+	}
 	secret[0] = 'X'
 	if got := string(credential.Data()); got != `{"api_key":"sk-secret-value"}` {
 		t.Fatalf("Data() = %q after input mutation", got)
@@ -192,7 +195,7 @@ func TestCredentialSnapshotProtectsSecretDataAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	if strings.Contains(string(encoded), "sk-secret-value") || strings.Contains(string(encoded), `"api_key":`) {
+	if strings.Contains(string(encoded), "sk-secret-value") || strings.Contains(string(encoded), "persisted-identity") || strings.Contains(string(encoded), `"api_key":`) {
 		t.Fatalf("credential JSON leaked secret data: %s", encoded)
 	}
 	if !strings.Contains(string(encoded), `"id":41`) || !strings.Contains(string(encoded), `"version":7`) || !strings.Contains(string(encoded), `"identity_generation":3`) {
@@ -276,7 +279,7 @@ func TestAttemptSpecOwnsReferenceBackedValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	if strings.Contains(string(encoded), "sk-secret-value") || strings.Contains(string(encoded), `"api_key":`) {
+	if strings.Contains(string(encoded), "sk-secret-value") || strings.Contains(string(encoded), "persisted-identity") || strings.Contains(string(encoded), `"api_key":`) {
 		t.Fatalf("attempt JSON leaked credential data: %s", encoded)
 	}
 }

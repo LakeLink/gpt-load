@@ -24,25 +24,25 @@ func executionRoundTripper(
 	proxyFromEnvironment bool,
 ) http.RoundTripper {
 	if proxyFromEnvironment {
-		return newEnvironmentProxyRoundTripper(cfg)
+		return newEnvironmentProxyRoundTripper(cfg, auth)
 	}
-	client := helps.NewUtlsHTTPClient(ctx, cfg, auth, 0)
+	client := executionHTTPClient(ctx, cfg, auth)
 	if client.Transport != nil {
 		return client.Transport
 	}
 	return http.DefaultTransport
 }
 
-func newEnvironmentProxyRoundTripper(cfg *internalconfig.Config) *environmentProxyRoundTripper {
+func newEnvironmentProxyRoundTripper(cfg *internalconfig.Config, auth *cliproxyauth.Auth) *environmentProxyRoundTripper {
 	return &environmentProxyRoundTripper{
 		resolveProxy: http.ProxyFromEnvironment,
 		transportForURL: func(proxyURL string) http.RoundTripper {
-			client := helps.NewUtlsHTTPClient(
-				nil,
-				cfg,
-				&cliproxyauth.Auth{ProxyURL: proxyURL},
-				0,
-			)
+			routed := &cliproxyauth.Auth{ProxyURL: proxyURL}
+			if auth != nil {
+				routed = auth.Clone()
+				routed.ProxyURL = proxyURL
+			}
+			client := executionHTTPClient(nil, cfg, routed)
 			return client.Transport
 		},
 	}
@@ -69,4 +69,11 @@ func (transport *environmentProxyRoundTripper) RoundTrip(request *http.Request) 
 		return nil, errors.New("initialize environment proxy transport")
 	}
 	return selected.RoundTrip(request)
+}
+
+func executionHTTPClient(ctx context.Context, cfg *internalconfig.Config, auth *cliproxyauth.Auth) *http.Client {
+	if auth != nil && auth.Provider == ProviderCodex {
+		return helps.NewCodexHTTPClient(ctx, cfg, auth, 0)
+	}
+	return helps.NewUtlsHTTPClient(ctx, cfg, auth, 0)
 }
