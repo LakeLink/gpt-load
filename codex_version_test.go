@@ -25,6 +25,10 @@ func TestCodexVersionSetStaysAligned(t *testing.T) {
 		if dependency.Path != "github.com/router-for-me/CLIProxyAPI/v8" {
 			continue
 		}
+		if dependency.Replace == nil || dependency.Replace.Path != "github.com/LakeLink/CLIProxyAPI/v8" {
+			t.Fatalf("CPA SDK must resolve to the LakeLink fork, got replacement %+v", dependency.Replace)
+		}
+		dependency = dependency.Replace
 		if dependency.Version != catalog.CodexModelCatalogCPASDKVersion {
 			t.Fatalf(
 				"CPA SDK version = %q, catalog expects %q",

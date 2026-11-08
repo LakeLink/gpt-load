@@ -31,7 +31,7 @@ func TestObservationWebsocketConnections(t *testing.T) {
 		if err := os.WriteFile(path, cert, 0600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestObservationWebsocketConnections$", "-test.v")
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestObservationWebsocketConnections$", "-test.v", "-test.timeout=45s")
 		cmd.Env = append(os.Environ(), "GPTLOAD_WS_OBSERVATION_HELPER=1", "SSL_CERT_FILE="+path)
 		output, err := cmd.CombinedOutput()
 		t.Log(string(output))
@@ -106,9 +106,9 @@ func TestObservationWebsocketConnections(t *testing.T) {
 					break
 				}
 			}
-			want := 2
+			want := 3
 			if turn == 0 {
-				want = 4
+				want = 5
 			}
 			if len(events) != want {
 				t.Fatalf("turn %d events=%#v", turn, events)
@@ -133,16 +133,29 @@ func TestObservationWebsocketConnections(t *testing.T) {
 			}
 			previousConnection = connection
 			if session == 0 && turn == 0 {
+				var sent, handshake map[string]any
+				for _, event := range events {
+					data := event["data"].(map[string]any)
+					if event["type"] == "upstream.stream" && data["direction"] == "request" {
+						sent = event
+					}
+					if event["type"] == "upstream.response" && data["phase"] == "websocket_handshake" {
+						handshake = event
+					}
+				}
+				if sent == nil || handshake == nil {
+					t.Fatalf("missing send/handshake: %#v", events)
+				}
 				for _, sample := range []struct {
 					name   string
 					event  map[string]any
 					fields []string
 				}{
-					{"websocket-handshake", events[1], []string{"phase", "status_code", "protocol", "stream", "headers"}},
-					{"websocket-request", events[2], []string{"phase", "protocol", "stream", "body", "exchange_sequence"}},
-					{"websocket-finished", events[3], []string{"protocol", "operation", "status", "stream", "request_body"}},
+					{"websocket-handshake", handshake, []string{"phase", "status_code", "protocol", "stream", "headers"}},
+					{"websocket-stream-request", sent, []string{"transport", "direction", "kind", "protocol", "message_type", "write_result"}},
+					{"websocket-finished", events[4], []string{"protocol", "operation", "status", "stream", "request_body"}},
 				} {
-					encoded, err := os.ReadFile("../../testdata/observation/v1/" + sample.name + ".msgpack")
+					encoded, err := os.ReadFile("../../testdata/observation/v2/" + sample.name + ".msgpack")
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -160,16 +173,16 @@ func TestObservationWebsocketConnections(t *testing.T) {
 					}
 				}
 			}
-			for i, event := range events[:len(events)-1] {
+			for _, event := range events[:len(events)-1] {
 				data := event["data"].(map[string]any)
-				phase := "websocket_request"
-				if turn == 0 && i < 2 {
+				phase := ""
+				if event["type"] == "upstream.request" || event["type"] == "upstream.response" {
 					phase = "websocket_handshake"
 				}
-				if data["request_id"] != id || data["attempt_id"] != attempt["attempt_id"] || data["upstream_connection_id"] != connection || data["phase"] != phase || data["identity_generation"] != attempt["identity_generation"] {
+				if data["request_id"] != id || data["attempt_id"] != attempt["attempt_id"] || data["upstream_connection_id"] != connection || (phase != "" && data["phase"] != phase) || data["identity_generation"] != attempt["identity_generation"] {
 					t.Fatalf("process=%#v attempt=%#v", event, attempt)
 				}
-				if phase == "websocket_handshake" && i == 1 && (data["status_code"] != int64(101) || !reflect.DeepEqual(data["headers"].(map[string]any)["X-Ws-Raw"], []any{"one", "two"})) {
+				if event["type"] == "upstream.response" && (data["status_code"] != int64(101) || !reflect.DeepEqual(data["headers"].(map[string]any)["X-Ws-Raw"], []any{"one", "two"})) {
 					t.Fatalf("handshake=%#v", data)
 				}
 			}
@@ -179,6 +192,15 @@ func TestObservationWebsocketConnections(t *testing.T) {
 		case <-closed:
 		case <-time.After(5 * time.Second):
 			t.Fatal("upstream connection leaked")
+		}
+		ends := map[any]bool{}
+		for len(ends) < 2 {
+			event := readObservation(t, plugin)
+			data := event["data"].(map[string]any)
+			if event["type"] != "upstream.stream" || data["kind"] != "end" || data["upstream_connection_id"] != previousConnection || data["last_stream_sequence"] != int64(2) || ends[data["direction"]] {
+				t.Fatalf("connection end=%#v", event)
+			}
+			ends[data["direction"]] = true
 		}
 	}
 	rejected := dialObservationResponses(t, fixture)
@@ -352,16 +374,23 @@ func testObservationWSConcurrent(t *testing.T) {
 				event := readObservation(t, plugin)
 				data := event["data"].(map[string]any)
 				id := data["request_id"]
-				if event["type"] == "upstream.request" && data["phase"] == "websocket_request" {
-					var payload struct{ Input string }
-					if err := json.Unmarshal(data["body"].([]byte), &payload); err != nil {
-						t.Fatal(err)
+				if event["type"] == "upstream.stream" && data["kind"] == "data" && data["direction"] == "request" {
+					marker := ""
+					for i := range clients {
+						candidate := fmt.Sprintf("marker-%d", i)
+						if strings.Contains(string(data["body"].([]byte)), candidate) {
+							marker = candidate
+							break
+						}
+					}
+					if marker == "" {
+						t.Fatalf("serialized request marker missing: %#v", data)
 					}
 					connection := data["upstream_connection_id"]
-					if prior, ok := connectionByMarker[payload.Input]; ok && prior != connection {
+					if prior, ok := connectionByMarker[marker]; ok && prior != connection {
 						t.Fatal("concurrent turn changed physical connection")
 					}
-					connectionByMarker[payload.Input] = connection
+					connectionByMarker[marker] = connection
 					if _, ok := requestIDs[id]; ok {
 						t.Fatal("duplicate logical request")
 					}
@@ -402,8 +431,15 @@ func testObservationWSConcurrent(t *testing.T) {
 				t.Fatal("independent clients shared connection identity")
 			}
 			fixture.command(t, plugin, "unsubscribe", "stop")
-			if reply := readObservation(t, plugin); reply["type"] != "unsubscribed" {
-				t.Fatal(reply)
+			for {
+				reply := readObservation(t, plugin)
+				if reply["type"] == "unsubscribed" {
+					break
+				}
+				data := reply["data"].(map[string]any)
+				if reply["type"] != "upstream.stream" || data["kind"] != "end" {
+					t.Fatal(reply)
+				}
 			}
 		}
 		// 轮次返回可早于网关退出；等待连接协程完成后采样。

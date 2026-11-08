@@ -6,7 +6,10 @@ OAuth helpers needed by GPT-Load are implemented in CPA `internal` packages and
 cannot be imported from the root `gpt-load` module directly.
 
 The module path is a child of CPA's module path, so it can compile the pinned
-CPA implementation without copying CPA source into this repository. GPT-Load
+CPA implementation. Both modules select the same immutable commit of the
+[LakeLink CPA fork](https://github.com/LakeLink/CLIProxyAPI) through a versioned
+Go module replacement. The fork supplies small post-decode HTTP and raw
+WebSocket observation hooks; capture policy remains in this bridge. GPT-Load
 owns persistence, account selection, affinity, retry, health, logging, and
 quota policy. This bridge only exposes:
 
@@ -52,7 +55,7 @@ Model and account observation requests use the same version for their User-Agent
 Version header, and models `client_version` query parameter. The embedded model
 JSON is copied from OpenAI Codex `rust-v0.159.2`,
 `codex-rs/models-manager/models.json`, with its SHA-256 checked by tests.
-CPA `v8.0.8`, the Codex identity, and this model snapshot form one tested version set.
+The pinned CPA fork, the Codex identity, and this model snapshot form one tested version set.
 The bridge pins execution identity because CPA's built-in UA still uses an older version.
 HTTP, image, WebSocket, and observation tests check these outgoing values.
 
@@ -110,7 +113,7 @@ capability to GPT-Load callers. The existing `NewExecutor` remains HTTP-only.
   guarantee prompt termination or resource release while that operation is stuck;
   the goroutine and connection can remain until the proxy/network returns. Once
   the SOCKS5 tunnel is established, the existing TLS/WS cancellation and Session
-  cleanup apply. The facade does not modify or fork the SDK to change this behavior.
+  cleanup apply. The retained SDK hooks observe raw transport facts while leaving this replay behavior intact.
 - A lifetime-bound CPA `ExecutionLifecycle` blocks HTTP fallback and rejects
   replacement connections. CPA can still perform an extra handshake after a send
   failure, but cannot send the business request again. This is not a guarantee of
@@ -120,7 +123,7 @@ capability to GPT-Load callers. The existing `NewExecutor` remains HTTP-only.
   use updated timeout settings. `Done` closes when the Session is invalidated.
   Request and forwarded-event limits default to 10 MiB each. All three are configurable when creating the Session.
   The facade buffers no conversation history or output queue. Event checks occur
-  **after SDK reading**: CPA v8.0.8 has no exposed raw-frame size limit and has
+  **after SDK reading**: the pinned CPA fork has no exposed raw-frame size limit and has
   its own internal buffers. These checks do not bound all SDK memory. CPA also
   retains its upstream read-idle timeout; idle connection loss invalidates the
   Session and is not transparently recovered.
@@ -151,7 +154,7 @@ sent only in the first. `CPA_LIVE_CODEX_WS_PROXY_URL` defaults to `direct`;
 ## Grok request identity
 
 `grokClientVersion` is the single identity pin for execution, model discovery, and
-billing, currently `1.0.44` with CPA `v8.0.8`. Each path retains its own User-Agent
+billing, currently `1.0.44` with the pinned CPA fork. Each path retains its own User-Agent
 format. CPA's version constant is not exported, and its default CLI identity only
 applies to the official chat-proxy endpoint; the bridge therefore keeps its
 explicit headers for custom upstreams too. Upgrading CPA does not replace this pin.
@@ -164,7 +167,15 @@ validation; Grok has no CLI-version-bound model template snapshot to update.
 ## Pinned upstream
 
 - Module: `github.com/router-for-me/CLIProxyAPI/v8`
-- Version: `v8.0.8`
+- Source: `github.com/LakeLink/CLIProxyAPI/v8`
+- Commit: `7357dfa88ffa9f1b0a9e0796fa07b2ef0cfb54b8`
+- Version: the identical immutable replacement version in the root and bridge `go.mod` files.
+
+The fork patch adds observation calls in four existing production files and two
+SDK interfaces, plus focused contract tests. It is based on upstream commit
+`c5251b57b3fa5dcbc689f514f4aa166daacb4481`. Review the
+[patch](https://github.com/LakeLink/CLIProxyAPI/commit/7357dfa88ffa9f1b0a9e0796fa07b2ef0cfb54b8)
+when updating CPA, then run bridge stream tests and host recorder acceptance.
 
 The bridge keeps Codex's fixed Version, execution and observation identity, and
 model snapshot aligned at `0.159.2`. CPA includes Antigravity reasoning tokens in unary
@@ -271,7 +282,7 @@ that template, including `ultra`, instead of the narrower CPA snapshot list.
 Models absent from the official template keep their CPA level metadata. The raw
 CPA snapshot stays unchanged and retains its original provenance and digest.
 Unknown models and virtual fallback models do not advertise effort updates.
-Client templates remain pinned to Codex 0.159.2, with CPA v8.0.8; verify all
+Client templates remain pinned to Codex 0.159.2, with the pinned CPA fork; verify all
 version pins and both model snapshots together when updating this set.
 
 HTTP and WebSocket preserve supported `configuration_update` items. WebSocket

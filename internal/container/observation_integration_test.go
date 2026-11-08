@@ -34,7 +34,7 @@ import (
 	"gpt-load/internal/subscription/providers/codex"
 )
 
-const observationSubprotocol = "gpt-load.observation.v1.msgpack"
+const observationSubprotocol = "gpt-load.observation.v2.msgpack"
 
 func TestObservationCodexRequestFinished(t *testing.T) {
 	upstreamCalls := make(chan http.Header, 4)
@@ -48,7 +48,7 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 	fixture := newObservationHost(t, upstream)
 	plugin := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 	defer plugin.CloseNow()
-	subscribeBytes, err := os.ReadFile("../../testdata/observation/v1/subscribe.msgpack")
+	subscribeBytes, err := os.ReadFile("../../testdata/observation/v2/subscribe.msgpack")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,21 +88,21 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 	if _, present := data["first_response_ms"]; present {
 		t.Fatal("unary observation unexpectedly reports first response timing")
 	}
-	sampleBytes, err := os.ReadFile("../../testdata/observation/v1/request-finished.msgpack")
+	sampleBytes, err := os.ReadFile("../../testdata/observation/v2/request-finished.msgpack")
 	if err != nil {
 		t.Fatal(err)
 	}
 	sample := decodeObservation(t, sampleBytes)["data"].(map[string]any)
 	for _, field := range []string{"protocol", "operation", "client_model", "status", "status_code", "stream", "request_body"} {
 		if !reflect.DeepEqual(data[field], sample[field]) {
-			t.Fatalf("v1 sample field %s=%#v, actual=%#v", field, sample[field], data[field])
+			t.Fatalf("v2 sample field %s=%#v, actual=%#v", field, sample[field], data[field])
 		}
 	}
 	sampleUsage := sample["usage"].(map[string]any)
 	actualUsage := data["usage"].(map[string]any)
 	for _, field := range []string{"state", "tokens", "pricing"} {
 		if !reflect.DeepEqual(actualUsage[field], sampleUsage[field]) {
-			t.Fatalf("v1 usage field %s=%#v, actual=%#v", field, sampleUsage[field], actualUsage[field])
+			t.Fatalf("v2 usage field %s=%#v, actual=%#v", field, sampleUsage[field], actualUsage[field])
 		}
 	}
 	attempt := data["attempts"].([]any)[0].(map[string]any)

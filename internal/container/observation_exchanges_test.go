@@ -133,7 +133,35 @@ func TestObservationSSEBeforeCompletion(t *testing.T) {
 			if outcome != "canceled" && (resultValue.err != nil || !strings.Contains(resultValue.body, "local ")) {
 				t.Fatalf("stream result = %+v", resultValue)
 			}
-			final := readObservation(t, plugin)
+			var final map[string]any
+			var rawBytes, streamSequence int64
+			var streamEnded bool
+			for {
+				event := readObservation(t, plugin)
+				if event["type"] == "request.finished" {
+					final = event
+					break
+				}
+				content := event["data"].(map[string]any)
+				if event["type"] != "upstream.stream" || content["direction"] != "response" || content["transport"] != "sse" || content["request_id"] != responseData["request_id"] {
+					t.Fatalf("stream content=%#v", event)
+				}
+				if content["kind"] == "data" {
+					streamSequence++
+					if streamEnded || content["stream_sequence"] != streamSequence || content["byte_offset"] != rawBytes || content["body_size"] != int64(len(content["body"].([]byte))) {
+						t.Fatalf("stream counters=%#v", content)
+					}
+					rawBytes += content["body_size"].(int64)
+				} else {
+					if streamEnded || content["last_stream_sequence"] != streamSequence || content["total_body_bytes"] != rawBytes {
+						t.Fatalf("stream end=%#v", content)
+					}
+					streamEnded = true
+				}
+			}
+			if rawBytes == 0 || !streamEnded {
+				t.Fatalf("missing stream lifecycle: bytes=%d end=%v", rawBytes, streamEnded)
+			}
 			data := final["data"].(map[string]any)
 			if final["type"] != "request.finished" || data["status"] != outcome || data["request_id"] != responseData["request_id"] || data["first_response_ms"] == nil {
 				t.Fatalf("stream outcome = %#v", final)

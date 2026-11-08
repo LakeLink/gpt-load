@@ -212,13 +212,20 @@ func testCodexWSSessionInterruptAndContinue(t *testing.T, eventType string, outp
 	if err := sender.Interrupt(t.Context(), interrupt); err == nil {
 		t.Fatal("idle interrupt was accepted")
 	}
+	observedSends := make(chan ExchangeObservation, 8)
+	observedCtx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) {
+		if fact.Stream != nil && fact.Stream.Direction == "request" && fact.Stream.Kind == "data" {
+			fact.Body = append([]byte(nil), fact.Body...)
+			observedSends <- fact
+		}
+	})
 	created := make(chan struct{})
 	finished := make(chan struct{})
 	var first CodexWSTurnResult
 	var firstErr error
 	go func() {
 		defer close(finished)
-		first, firstErr = session.ExecuteTurn(t.Context(), json.RawMessage(`{"model":"gpt-5","input":"question","store":false}`), func(_ context.Context, body json.RawMessage) error {
+		first, firstErr = session.ExecuteTurn(observedCtx, json.RawMessage(`{"model":"gpt-5","input":"question","store":false}`), func(_ context.Context, body json.RawMessage) error {
 			var event struct {
 				Type string `json:"type"`
 			}
@@ -267,8 +274,15 @@ func testCodexWSSessionInterruptAndContinue(t *testing.T, eventType string, outp
 	if err := sender.Interrupt(t.Context(), interrupt); err == nil {
 		t.Fatal("completed turn accepted another interrupt")
 	}
-	second, err := session.ExecuteTurn(t.Context(), json.RawMessage(`{"model":"gpt-5","previous_response_id":"resp_1","input":"answer","store":false}`), nil)
+	second, err := session.ExecuteTurn(observedCtx, json.RawMessage(`{"model":"gpt-5","previous_response_id":"resp_1","input":"answer","store":false}`), nil)
 	if err != nil || second.ResponseID != "resp_2" || connections.Load() != 1 {
 		t.Fatalf("continuation=%+v err=%v connections=%d", second, err, connections.Load())
+	}
+	if len(observedSends) != 3 {
+		t.Fatalf("actual sends=%d, want create, interrupt, continuation", len(observedSends))
+	}
+	createFact, interruptFact, continuationFact := <-observedSends, <-observedSends, <-observedSends
+	if !bytes.Equal(interruptFact.Body, interrupt) || interruptFact.Stream.WriteResult != "success" || interruptFact.Stream.StreamSequence != 2 || interruptFact.Stream.ByteOffset != uint64(len(createFact.Body)) || continuationFact.Stream.StreamSequence != 3 || continuationFact.Stream.ByteOffset != uint64(len(createFact.Body)+len(interrupt)) {
+		t.Fatalf("actual interrupt payload or shared direction counters changed: interrupt=%+v continuation=%+v", interruptFact, continuationFact)
 	}
 }

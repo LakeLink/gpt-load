@@ -545,7 +545,17 @@ func codexExchangeObserver(observer func(execution.UpstreamExchange)) func(codex
 		return nil
 	}
 	return func(fact codex.ExchangeObservation) {
-		observer(execution.UpstreamExchange{Kind: fact.Kind, Sequence: fact.Sequence, Phase: fact.Phase,
+		var stream *execution.StreamObservation
+		if fact.Stream != nil {
+			stream = &execution.StreamObservation{
+				Transport: fact.Stream.Transport, Direction: fact.Stream.Direction, Kind: fact.Stream.Kind,
+				StreamSequence: fact.Stream.StreamSequence, ByteOffset: fact.Stream.ByteOffset, BodySize: fact.Stream.BodySize,
+				LastStreamSequence: fact.Stream.LastStreamSequence, TotalBodyBytes: fact.Stream.TotalBodyBytes,
+				MessageType: fact.Stream.MessageType, WriteResult: fact.Stream.WriteResult, EndReason: fact.Stream.EndReason,
+				ErrorCode: fact.Stream.ErrorCode, CloseCode: fact.Stream.CloseCode, ConnectionOnly: fact.Stream.ConnectionOnly,
+			}
+		}
+		observer(execution.UpstreamExchange{Stream: stream, Kind: fact.Kind, Sequence: fact.Sequence, Phase: fact.Phase,
 			ObservedAt: fact.ObservedAt, Header: fact.Header, StatusCode: fact.StatusCode,
 			Method: fact.Method, URL: fact.URL, Body: fact.Body, UpstreamConnectionID: fact.UpstreamConnectionID, Protocol: codexUpstreamProtocol(fact.Path)})
 	}

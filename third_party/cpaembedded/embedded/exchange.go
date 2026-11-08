@@ -11,6 +11,7 @@ import (
 // HTTP 请求位于 version/session 头部装配前；WS 请求位于 SDK 头部和帧装配前。
 // Sequence 属于一次执行，内部重发递增，请求及其响应共享该值。
 type ExchangeObservation struct {
+	Stream               *StreamObservation
 	UpstreamConnectionID string
 	Body                 []byte
 	Kind                 string
@@ -22,6 +23,25 @@ type ExchangeObservation struct {
 	Path                 string
 	Header               http.Header
 	StatusCode           int
+}
+
+// StreamObservation describes borrowed application bytes or one direction's end.
+// Body is carried by ExchangeObservation and is valid during the synchronous callback.
+type StreamObservation struct {
+	Transport          string
+	Direction          string
+	Kind               string
+	StreamSequence     uint64
+	ByteOffset         uint64
+	BodySize           uint64
+	LastStreamSequence uint64
+	TotalBodyBytes     uint64
+	MessageType        string
+	WriteResult        string
+	EndReason          string
+	ErrorCode          string
+	CloseCode          int
+	ConnectionOnly     bool
 }
 
 type codexWSTurnObserverKey struct{}

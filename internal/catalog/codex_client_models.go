@@ -15,8 +15,8 @@ const (
 	// CodexModelCatalogVersion identifies the Codex client contract represented by the embedded snapshot.
 	CodexModelCatalogVersion = modelcatalog.ClientVersion
 	// CodexModelCatalogCPASDKVersion identifies the CPA SDK release tested with this snapshot.
-	// v8.0.56 标签被重打；固定包含编译修复的提交，避开 Go 代理缓存的旧源码。
-	CodexModelCatalogCPASDKVersion = "v8.0.56-0.20261105035157-585f97deac9a"
+	// The LakeLink fork supplies the raw transport observation hooks.
+	CodexModelCatalogCPASDKVersion = "v8.0.60-0.20261107191606-7357dfa88ffa"
 	codexModelCatalogSHA256        = modelcatalog.ClientSHA256
 	codexFallbackModel             = "gpt-5.5"
 )

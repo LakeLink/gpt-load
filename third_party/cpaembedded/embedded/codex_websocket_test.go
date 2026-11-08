@@ -246,6 +246,9 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 	defer cancelFirst()
 	var firstFacts, secondFacts []ExchangeObservation
 	firstCtx = WithCodexWSTurnObserver(firstCtx, func(fact ExchangeObservation) {
+		if fact.Stream != nil && fact.Stream.Kind == "end" {
+			return
+		}
 		fact.Header = fact.Header.Clone()
 		fact.Body = append([]byte(nil), fact.Body...)
 		firstFacts = append(firstFacts, fact)
@@ -259,6 +262,9 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 	}
 	cancelFirst() // 成功请求的 context 结束不应关闭已空闲的会话。
 	secondCtx := WithCodexWSTurnObserver(context.Background(), func(fact ExchangeObservation) {
+		if fact.Stream != nil && fact.Stream.Kind == "end" {
+			return
+		}
 		fact.Header = fact.Header.Clone()
 		fact.Body = append([]byte(nil), fact.Body...)
 		secondFacts = append(secondFacts, fact)
@@ -274,8 +280,17 @@ func TestCodexWSSessionContinuationAndIsolation(t *testing.T) {
 		len(second.Headers) != 0 || !second.HeaderObservedAt.IsZero() || headerCalls != 1 {
 		t.Fatal("handshake headers were lost or reused as fresh observation")
 	}
-	if len(firstFacts) != 3 || len(secondFacts) != 1 || first.UpstreamConnectionID == "" || first.UpstreamConnectionID != second.UpstreamConnectionID || firstFacts[0].Phase != "websocket_handshake" || firstFacts[1].StatusCode != 101 || firstFacts[2].Phase != "websocket_request" || firstFacts[2].Sequence != 2 || secondFacts[0].Sequence != 1 || secondFacts[0].UpstreamConnectionID != first.UpstreamConnectionID || !strings.Contains(string(secondFacts[0].Body), `"input":"continue"`) {
-		t.Fatalf("first=%+v second=%+v facts=%+v / %+v", first, second, firstFacts, secondFacts)
+	firstSent, secondSent := wsStreamFacts(firstFacts, "request", "data"), wsStreamFacts(secondFacts, "request", "data")
+	firstReceived, secondReceived := wsStreamFacts(firstFacts, "response", "data"), wsStreamFacts(secondFacts, "response", "data")
+	if len(firstFacts) != 4 || len(secondFacts) != 2 || len(firstSent) != 1 || len(secondSent) != 1 || len(firstReceived) != 1 || len(secondReceived) != 1 {
+		t.Fatalf("unexpected turn facts: first=%+v second=%+v", firstFacts, secondFacts)
+	}
+	if first.UpstreamConnectionID == "" || first.UpstreamConnectionID != second.UpstreamConnectionID || firstFacts[0].Phase != "websocket_handshake" ||
+		firstSent[0].Sequence != 2 || secondSent[0].Sequence != 1 || secondSent[0].UpstreamConnectionID != first.UpstreamConnectionID ||
+		!strings.Contains(string(secondSent[0].Body), `"text":"continue"`) || firstSent[0].Stream.StreamSequence != 1 || secondSent[0].Stream.StreamSequence != 2 ||
+		secondSent[0].Stream.ByteOffset != uint64(len(firstSent[0].Body)) || secondReceived[0].Stream.StreamSequence != 2 ||
+		secondReceived[0].Stream.ByteOffset != uint64(len(firstReceived[0].Body)) {
+		t.Fatalf("connection counters or turn attribution: first=%+v second=%+v", firstFacts, secondFacts)
 	}
 	other := wsTestSession(t, server.URL)
 	if _, err := other.ExecuteTurn(context.Background(), json.RawMessage(`{"model":"gpt-5","input":"another"}`), consume); err != nil {
@@ -566,7 +581,7 @@ func TestCodexWSSessionRejectsInvalidOptions(t *testing.T) {
 }
 
 func TestCodexWSSessionEventFailureClosesConnection(t *testing.T) {
-	for _, mode := range []string{"invalid", "oversize", "consumer", "disconnect"} {
+	for _, mode := range []string{"invalid", "binary", "oversize", "consumer", "disconnect"} {
 		t.Run(mode, func(t *testing.T) {
 			disconnected := make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -584,10 +599,14 @@ func TestCodexWSSessionEventFailureClosesConnection(t *testing.T) {
 					return
 				}
 				payload := wsCompleted("resp_test")
+				messageType := websocket.TextMessage
 				if mode == "invalid" {
 					payload = []byte(`{"invalid"`)
 				}
-				if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+				if mode == "binary" {
+					payload, messageType = []byte{0, 255, 128, 1}, websocket.BinaryMessage
+				}
+				if err := conn.WriteMessage(messageType, payload); err != nil {
 					t.Error(err)
 					return
 				}
@@ -598,7 +617,12 @@ func TestCodexWSSessionEventFailureClosesConnection(t *testing.T) {
 			if mode == "oversize" {
 				session.options.MaxEventBytes = 16
 			}
-			_, err := session.ExecuteTurn(context.Background(), json.RawMessage(`{"model":"gpt-5","input":"hello"}`), func(context.Context, json.RawMessage) error {
+			observed := make(chan ExchangeObservation, 16)
+			ctx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) {
+				fact.Body = append([]byte(nil), fact.Body...)
+				observed <- fact
+			})
+			_, err := session.ExecuteTurn(ctx, json.RawMessage(`{"model":"gpt-5","input":"hello"}`), func(context.Context, json.RawMessage) error {
 				if mode == "consumer" {
 					return errors.New("consumer stopped")
 				}
@@ -617,6 +641,48 @@ func TestCodexWSSessionEventFailureClosesConnection(t *testing.T) {
 			}
 			if !session.closed {
 				t.Fatal("failed session was retained")
+			}
+			var facts []ExchangeObservation
+			for ends := 0; ends < 2; {
+				select {
+				case fact := <-observed:
+					facts = append(facts, fact)
+					if fact.Stream != nil && fact.Stream.Kind == "end" {
+						ends++
+					}
+				case <-time.After(time.Second):
+					t.Fatal("missing connection end observations")
+				}
+			}
+			received := wsStreamFacts(facts, "response", "data")
+			want := wsCompleted("resp_test")
+			if mode == "invalid" {
+				want = []byte(`{"invalid"`)
+			}
+			if mode == "binary" {
+				want = []byte{0, 255, 128, 1}
+			}
+			if mode == "disconnect" {
+				if len(received) != 0 {
+					t.Fatal("disconnect fabricated message data")
+				}
+			} else if len(received) != 1 || string(received[0].Body) != string(want) || received[0].Stream.StreamSequence != 1 || received[0].Stream.ByteOffset != 0 || received[0].Stream.BodySize != uint64(len(want)) {
+				t.Fatalf("raw rejected message changed: %+v", received)
+			} else if mode == "binary" && received[0].Stream.MessageType != "binary" {
+				t.Fatal("binary message type lost")
+			}
+			for _, fact := range facts {
+				if fact.Stream != nil && fact.Stream.Kind == "end" {
+					if !fact.Stream.ConnectionOnly {
+						t.Fatal("connection end inherited a turn identity")
+					}
+					if fact.Stream.Direction == "response" && fact.Stream.TotalBodyBytes != uint64(len(want)) && mode != "disconnect" {
+						t.Fatal("end totals lost rejected payload")
+					}
+					if fact.Stream.Direction == "response" && mode == "disconnect" && (fact.Stream.EndReason != "read_error" || fact.Stream.CloseCode != websocket.CloseAbnormalClosure) {
+						t.Fatalf("abrupt disconnect classification=%+v", fact.Stream)
+					}
+				}
 			}
 		})
 	}
@@ -664,6 +730,9 @@ func TestCodexWSSessionGuardsSDKSendRetry(t *testing.T) {
 			})
 			var facts []ExchangeObservation
 			ctx = WithCodexWSTurnObserver(ctx, func(fact ExchangeObservation) {
+				if fact.Stream != nil && fact.Stream.Kind == "end" {
+					return
+				}
 				fact.Header = fact.Header.Clone()
 				fact.Body = append([]byte(nil), fact.Body...)
 				facts = append(facts, fact)
@@ -682,11 +751,11 @@ func TestCodexWSSessionGuardsSDKSendRetry(t *testing.T) {
 			if first == "" || facts[0].Phase != "websocket_handshake" || facts[0].Kind != "request" || facts[0].Sequence != 1 {
 				t.Fatalf("first handshake=%+v", facts[0])
 			}
-			if facts[1].Kind != "response" || facts[1].StatusCode != 101 || facts[1].Header.Get("X-Handshake") != "1" || facts[1].Sequence != 1 || facts[1].UpstreamConnectionID != first {
-				t.Fatalf("lost first upgrade: %+v", facts[1])
+			if facts[2].Kind != "response" || facts[2].StatusCode != 101 || facts[2].Header.Get("X-Handshake") != "1" || facts[2].Sequence != 1 || facts[2].UpstreamConnectionID != first {
+				t.Fatalf("lost first upgrade: %+v", facts[2])
 			}
-			if facts[2].Phase != "websocket_request" || facts[2].Kind != "request" || facts[2].Sequence != 2 || facts[2].UpstreamConnectionID != first || !json.Valid(facts[2].Body) {
-				t.Fatalf("lost logical send: %+v", facts[2])
+			if facts[1].Kind != "stream" || facts[1].Stream == nil || facts[1].Stream.WriteResult != "error" || facts[1].Sequence != 2 || facts[1].UpstreamConnectionID != first || !json.Valid(facts[1].Body) {
+				t.Fatalf("lost actual send attempt: %+v", facts[1])
 			}
 			if facts[3].Phase != "websocket_handshake" || facts[3].Kind != "request" || facts[3].Sequence != 3 || facts[3].UpstreamConnectionID == first || facts[3].UpstreamConnectionID == "" {
 				t.Fatalf("replacement association=%+v", facts[3])
@@ -734,6 +803,9 @@ func TestCodexWSSessionObservesFailedReusedSend(t *testing.T) {
 	}
 	var facts []ExchangeObservation
 	nextCtx := WithCodexWSTurnObserver(t.Context(), func(fact ExchangeObservation) {
+		if fact.Stream != nil && fact.Stream.Kind == "end" {
+			return
+		}
 		fact.Header = fact.Header.Clone()
 		fact.Body = append([]byte(nil), fact.Body...)
 		facts = append(facts, fact)
@@ -757,7 +829,7 @@ func TestCodexWSSessionObservesFailedReusedSend(t *testing.T) {
 		t.Fatalf("lost reused send: %+v", facts)
 	}
 	fact := facts[0]
-	if fact.Kind != "request" || fact.Phase != "websocket_request" || fact.Sequence != 1 || fact.UpstreamConnectionID == "" || fact.UpstreamConnectionID != first.UpstreamConnectionID || second.UpstreamConnectionID != first.UpstreamConnectionID || string(fact.Body) != string(payload) {
+	if fact.Kind != "stream" || fact.Stream == nil || fact.Stream.WriteResult != "error" || fact.Stream.StreamSequence != 2 || fact.Sequence != 1 || fact.UpstreamConnectionID == "" || fact.UpstreamConnectionID != first.UpstreamConnectionID || second.UpstreamConnectionID != first.UpstreamConnectionID || !strings.Contains(string(fact.Body), `"text":"second"`) {
 		t.Fatalf("reused send association: first=%+v second=%+v fact=%+v", first, second, fact)
 	}
 	if connections.Load() != 1 || frames.Load() != 1 {
@@ -1298,4 +1370,14 @@ func TestCodexWSSessionFixedIdentity(t *testing.T) {
 			})
 		}
 	}
+}
+
+func wsStreamFacts(facts []ExchangeObservation, direction, kind string) []ExchangeObservation {
+	var result []ExchangeObservation
+	for _, fact := range facts {
+		if fact.Stream != nil && fact.Stream.Direction == direction && fact.Stream.Kind == kind {
+			result = append(result, fact)
+		}
+	}
+	return result
 }

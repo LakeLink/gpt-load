@@ -21,7 +21,7 @@ func TestObservationAuthenticationAndControls(t *testing.T) {
 	}{
 		{"research", "wrong", observationSubprotocol, 401},
 		{"unknown", "plugin-test-token", observationSubprotocol, 401},
-		{"research", "plugin-test-token", "gpt-load.observation.v2.msgpack", 400},
+		{"research", "plugin-test-token", "gpt-load.observation.v1.msgpack", 400},
 	} {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		conn, response, err := websocket.Dial(ctx, strings.Replace(fixture.server.URL, "https://", "wss://", 1)+"/api/plugins/"+test.id+"/events", &websocket.DialOptions{HTTPClient: fixture.server.Client(), HTTPHeader: http.Header{"Authorization": []string{"Bearer " + test.token}}, Subprotocols: []string{test.version}})

@@ -18,6 +18,8 @@ import (
 	"github.com/ugorji/go/codec"
 	"gpt-load/internal/automodel"
 	"gpt-load/internal/channel"
+	"gpt-load/internal/execution"
+	"gpt-load/internal/protocol"
 	"gpt-load/internal/requestaudit"
 	"gpt-load/internal/telemetry"
 
@@ -378,10 +380,11 @@ func TestSharedProtocolSamplesPreservePrimitiveAndOptionalValues(t *testing.T) {
 		name, kind  string
 		bodyOmitted bool
 	}{
+		{"sse-stream-data", "upstream.stream", false}, {"sse-stream-end", "upstream.stream", false}, {"websocket-stream-request", "upstream.stream", false}, {"websocket-stream-response", "upstream.stream", false}, {"websocket-stream-end", "upstream.stream", false}, {"stream-empty", "upstream.stream", false}, {"stream-body-omitted", "upstream.stream", true},
 		{"upstream-request", "upstream.request", false}, {"upstream-response", "upstream.response", false}, {"sse-response", "upstream.response", false}, {"body-omitted", "upstream.request", true}, {"oversized", "oversized", true}, {"zero-values", "request.finished", false}, {"unknown-values", "request.finished", false},
 	} {
 		t.Run(sample.name, func(t *testing.T) {
-			raw, err := os.ReadFile("../../testdata/observation/v1/" + sample.name + ".msgpack")
+			raw, err := os.ReadFile("../../testdata/observation/v2/" + sample.name + ".msgpack")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -460,5 +463,44 @@ func TestFinalOversizedQueueBudgetIsInclusive(t *testing.T) {
 				t.Fatalf("accepted record=%#v", event)
 			}
 		})
+	}
+}
+
+// Connection-only records must discard identities captured by the last turn's callback.
+func TestStreamProjectionPreservesCountersAndConnectionScope(t *testing.T) {
+	service, connect := oversizedFixture(t, 512, 4096, "a")
+	conn := connect("a")
+	defer conn.CloseNow()
+	sendCommand(t, conn, "subscribe")
+	readMessage(t, conn)
+	spec := execution.AttemptSpec{ChannelID: "codex", RequestID: "stale-request", AttemptID: "stale-attempt", Sequence: 3, UpstreamModel: "stale-model", Credential: execution.CredentialSnapshot{ID: 7, Version: 9, IdentityGeneration: 11}}
+	body := []byte(strings.Repeat("x", 2000))
+	fact := execution.UpstreamExchange{Kind: "stream", Protocol: protocol.OpenAIResponses, ObservedAt: time.Now(), UpstreamConnectionID: "connection", Body: body, Stream: &execution.StreamObservation{Transport: "websocket", Direction: "response", Kind: "data", StreamSequence: 8, ByteOffset: 90, BodySize: uint64(len(body)), MessageType: "binary", ConnectionOnly: true}}
+	service.ObserveExchange(spec, true, fact)
+	for i := range body {
+		body[i] = 'y'
+	}
+	event := readMessage(t, conn)
+	data := event["data"].(map[string]any)
+	if event["type"] != "upstream.stream" || event["body_omitted"] != true || data["body_size"] != int64(2000) || data["byte_offset"] != int64(90) || data["stream_sequence"] != int64(8) || data["upstream_connection_id"] != "connection" {
+		t.Fatalf("omitted stream=%#v", event)
+	}
+	for _, key := range []string{"request_id", "attempt_id", "attempt_sequence", "exchange_sequence", "channel_id", "credential_id", "credential_version", "identity_generation", "model", "body"} {
+		if _, present := data[key]; present {
+			t.Fatalf("connection-only retained %s: %#v", key, data)
+		}
+	}
+	fact.Body = nil
+	fact.Stream = &execution.StreamObservation{Transport: "websocket", Direction: "request", Kind: "data", StreamSequence: 1, MessageType: "text", WriteResult: "success", ConnectionOnly: true}
+	service.ObserveExchange(spec, true, fact)
+	empty := readMessage(t, conn)["data"].(map[string]any)
+	if body, ok := empty["body"].([]byte); !ok || body == nil || len(body) != 0 || empty["byte_offset"] != int64(0) || empty["body_size"] != int64(0) {
+		t.Fatalf("empty stream body=%#v", empty)
+	}
+	fact.Stream = &execution.StreamObservation{Transport: "websocket", Direction: "request", Kind: "end", EndReason: "closed", ConnectionOnly: true}
+	service.ObserveExchange(spec, true, fact)
+	end := readMessage(t, conn)["data"].(map[string]any)
+	if end["last_stream_sequence"] != int64(0) || end["total_body_bytes"] != int64(0) || end["end_reason"] != "closed" {
+		t.Fatalf("empty direction end=%#v", end)
 	}
 }

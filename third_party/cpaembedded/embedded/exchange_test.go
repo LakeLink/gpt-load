@@ -74,8 +74,26 @@ func TestCodexHTTPExchangeCompressionFallbackSnapshots(t *testing.T) {
 	if err != nil || string(decoded) != string(wireBodies[1]) {
 		t.Fatalf("resend payload changed: %v", err)
 	}
-	if len(facts) != 4 {
+	if len(facts) < 6 {
 		t.Fatalf("facts = %+v", facts)
+	}
+	var captured strings.Builder
+	var lastSequence uint64
+	for _, fact := range facts[4:] {
+		if fact.Kind != "stream" || fact.Sequence != 2 || fact.Stream == nil {
+			t.Fatalf("stream fact = %+v", fact)
+		}
+		if fact.Stream.Kind == "data" {
+			if fact.Stream.ByteOffset != uint64(captured.Len()) || fact.Stream.StreamSequence != lastSequence+1 {
+				t.Fatalf("stream position = %+v", fact.Stream)
+			}
+			captured.Write(fact.Body)
+			lastSequence = fact.Stream.StreamSequence
+		}
+	}
+	end := facts[len(facts)-1].Stream
+	if !strings.Contains(captured.String(), `"model":"gpt-5"`) || end.Kind != "end" || end.TotalBodyBytes != uint64(captured.Len()) || end.LastStreamSequence != lastSequence {
+		t.Fatalf("captured body = %q, end = %+v", captured.String(), end)
 	}
 	for index, expected := range []struct {
 		kind, phase string

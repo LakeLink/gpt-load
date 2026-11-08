@@ -7,7 +7,7 @@ import (
 	"github.com/ugorji/go/codec"
 )
 
-const Subprotocol = "gpt-load.observation.v1.msgpack"
+const Subprotocol = "gpt-load.observation.v2.msgpack"
 const ControlReadLimit = 32 << 10
 
 type Command struct {

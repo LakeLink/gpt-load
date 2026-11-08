@@ -60,3 +60,6 @@ require (
 )
 
 replace github.com/MoeForge/moego v0.1.0-alpha.1 => github.com/router-for-me/moego v0.1.2
+
+// Pinned fork with decoded HTTP and raw WebSocket observation hooks.
+replace github.com/router-for-me/CLIProxyAPI/v8 => github.com/LakeLink/CLIProxyAPI/v8 v8.0.60-0.20261107191606-7357dfa88ffa

@@ -880,6 +880,10 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		if wrap, ok := req.Context().Value(streamBodyObserverKey{}).(func(io.ReadCloser, http.Header) io.ReadCloser); ok && wrap != nil {
 			resp.Body = wrap(resp.Body, resp.Header)
 		}
+		if t.observation != nil && t.observation.stream && t.observation.exchangeObserver != nil {
+			resp.Body = &pendingCodexSSEBody{ReadCloser: resp.Body, ctx: req.Context(),
+				exchange: sequence, path: req.URL.Path, observe: t.observation.exchangeObserver}
+		}
 	}
 	return resp, nil
 }

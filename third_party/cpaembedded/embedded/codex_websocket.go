@@ -97,6 +97,7 @@ type CodexWSSession struct {
 	id                  string
 	options             CodexWSSessionOptions
 	resource            *codexWSResource
+	stream              codexWSStreamCapture
 	mu                  sync.Mutex
 	running             bool
 	started             bool
@@ -215,6 +216,7 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 	s.turnDeadline, _ = turnCtx.Deadline()
 	s.activeResponseID, s.interruptResponseID = "", ""
 	result.UpstreamConnectionID = s.connectionID
+	priorResponseID := s.lastResponseID
 	reuse := s.started
 	s.mu.Unlock()
 	cleanupDone := make(chan struct{})
@@ -241,25 +243,22 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 	// Gorilla 的 Upgrade 读取只设置 deadline；捕获尚未绑定 lifecycle 的连接，
 	// 使主动取消也能中止 TLS/WS 握手，而不必等待握手超时。
 	observer, _ := ctx.Value(codexWSTurnObserverKey{}).(func(ExchangeObservation))
-	var sequence uint64
+	s.stream.beginTurn(turnCtx, observer, priorResponseID)
+	defer s.stream.endTurn()
 	var handshakeSequence uint64
 	var requestHeaders http.Header
 	observe := func(kind, phase string, seq uint64, headers http.Header, status int, body []byte) {
 		if observer != nil {
-			observer(ExchangeObservation{Kind: kind, Phase: phase, Sequence: seq, ObservedAt: time.Now(),
+			s.stream.observeExchange(ExchangeObservation{Kind: kind, Phase: phase, Sequence: seq, ObservedAt: time.Now(),
 				Header: headers, StatusCode: status, Body: body, Path: "/v1/responses",
 				UpstreamConnectionID: result.UpstreamConnectionID})
 		}
 	}
 	// SDK 在发送业务帧前保存握手头；首帧写失败时仍保留已完成的升级。
 	// 下一次 GotConn 先结算旧连接，再清空 holder，防止旧头归到新拨号。
-	completeHandshake := func(status int, attempted bool, headers http.Header) {
+	completeHandshake := func(status int, headers http.Header) {
 		if handshakeSequence > 0 && (len(headers) > 0 || status > 0) {
 			observe("response", "websocket_handshake", handshakeSequence, headers, status, nil)
-		}
-		if attempted {
-			sequence++
-			observe("request", "websocket_request", sequence, requestHeaders, 0, payload)
 		}
 		if len(headers) > 0 {
 			result.Headers = headers
@@ -274,7 +273,7 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 		GotConn: func(info httptrace.GotConnInfo) {
 			if handshakeSequence > 0 {
 				// SDK 仅在成功升级后的业务写失败时重拨，因此此前升级状态为 101。
-				completeHandshake(http.StatusSwitchingProtocols, true, internallogging.GetResponseHeaders(turnCtx))
+				completeHandshake(http.StatusSwitchingProtocols, internallogging.GetResponseHeaders(turnCtx))
 				internallogging.SetResponseHeaders(turnCtx, nil)
 			}
 			s.trackDialConnection(info.Conn)
@@ -282,9 +281,9 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 			s.mu.Lock()
 			s.connectionID = id
 			s.mu.Unlock()
+			s.stream.registerConnection(info.Conn, id)
 			result.UpstreamConnectionID = id
-			sequence++
-			handshakeSequence = sequence
+			handshakeSequence = s.stream.nextExchange()
 			observe("request", "websocket_handshake", handshakeSequence, requestHeaders, 0, nil)
 		},
 	})
@@ -334,11 +333,11 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 		},
 	})
 	if stream != nil {
-		completeHandshake(http.StatusSwitchingProtocols, true, stream.Headers.Clone())
+		completeHandshake(http.StatusSwitchingProtocols, stream.Headers.Clone())
 	} else if executionErr != nil && handshakeSequence > 0 {
 		headers := internallogging.GetResponseHeaders(turnCtx)
 		var status interface{ StatusCode() int }
-		code, attempted := 0, false
+		code := 0
 		if errors.As(executionErr, &status) {
 			code = status.StatusCode()
 			// CPA 将额度/容量错误归一到 429；这里省略无法证明的原始状态。
@@ -347,12 +346,9 @@ func (s *CodexWSSession) ExecuteTurn(ctx context.Context, payload json.RawMessag
 			}
 		} else if len(headers) > 0 {
 			// 无状态错误携带当前 holder，说明升级成功且首帧发送失败。
-			code, attempted = http.StatusSwitchingProtocols, true
+			code = http.StatusSwitchingProtocols
 		}
-		completeHandshake(code, attempted, headers)
-	} else if executionErr != nil && reuse && cliproxyexecutor.UpstreamAttempted(turnCtx) {
-		// 复用连接在写入前标记尝试；写失败仍属于当前轮次，握手沿用原连接。
-		completeHandshake(0, true, nil)
+		completeHandshake(code, headers)
 	}
 	close(headersReady)
 	if stream != nil {
@@ -606,6 +602,7 @@ func (s *CodexWSSession) invalidate(cancelActive bool) {
 	s.closeConnection = nil
 	s.pendingConnection = nil
 	s.mu.Unlock()
+	s.stream.close()
 	if cancelActive && cancel != nil {
 		cancel()
 	}
