@@ -23,7 +23,7 @@ func TestObservationLargeRequestAndResponseHeadersThroughWSS(t *testing.T) {
 	plugin := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 	defer plugin.CloseNow()
 	fixture.command(t, plugin, "subscribe", "large")
-	confirmation := readObservation(t, plugin)
+	confirmation := readObservationWithoutHTTP(t, plugin)
 	if confirmation["max_event_bytes"] != int64(budget) {
 		t.Fatalf("confirmation=%#v", confirmation)
 	}
@@ -49,9 +49,9 @@ func TestObservationLargeRequestAndResponseHeadersThroughWSS(t *testing.T) {
 	}
 	requestID := response.Header.Get("X-GPTLoad-Request-ID")
 	for index, want := range []string{"upstream.request", "oversized", "request.finished"} {
-		event := readObservation(t, plugin)
+		event := readObservationWithoutHTTP(t, plugin)
 		data := event["data"].(map[string]any)
-		if event["type"] != want || event["seq"] != int64(index+1) || event["boot_id"] != confirmation["boot_id"] || data["request_id"] != requestID {
+		if event["type"] != want || event["boot_id"] != confirmation["boot_id"] || data["request_id"] != requestID {
 			t.Fatalf("record=%#v", event)
 		}
 		switch index {

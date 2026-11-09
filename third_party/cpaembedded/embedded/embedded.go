@@ -821,14 +821,16 @@ func (e *CodexHTTPExecutor) executionContext(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	transport := executionRoundTripper(ctx, e.cfg, auth, proxyFromEnvironment)
+	var transport http.RoundTripper = noRedirectRoundTripper{
+		base: executionRoundTripper(ctx, e.cfg, auth, proxyFromEnvironment), observation: observation,
+	}
 	if request != nil {
 		transport = codexHeadersRoundTripper{
 			base: transport, source: request.Headers.Clone(),
 			configured: append([]string(nil), request.ConfiguredHeaders...),
 		}
 	}
-	return context.WithValue(ctx, "cliproxy.roundtripper", noRedirectRoundTripper{base: transport, observation: observation})
+	return context.WithValue(ctx, "cliproxy.roundtripper", transport)
 }
 
 // authWithoutProxyURL forces CPA to use the guarded transport already frozen
@@ -857,7 +859,39 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	if t.observation != nil {
 		t.observation.observe(req)
 	}
+	var latestExchange atomic.Uint64
+	latestExchange.Store(sequence)
+	if t.observation != nil && t.observation.exchangeObserver != nil {
+		req = req.Clone(req.Context())
+		observeBody := func(source io.ReadCloser, exchange uint64) io.ReadCloser {
+			body := &codexHTTPObservationBody{ctx: req.Context(), wire: source, decoded: source,
+				observe: t.observation.exchangeObserver, exchange: exchange, path: req.URL.Path,
+				transport: "http", direction: "request"}
+			if source == nil || source == http.NoBody {
+				body.finish("eof", io.EOF)
+				return source
+			}
+			return body
+		}
+		req.Body = observeBody(req.Body, sequence)
+		if getBody := req.GetBody; getBody != nil {
+			// net/http may replay on a reused connection inside RoundTrip. Each
+			// successful replay factory call starts an independent exchange.
+			req.GetBody = func() (io.ReadCloser, error) {
+				body, err := getBody()
+				if err != nil {
+					return body, err
+				}
+				exchange := t.observation.exchangeSequence.Add(1)
+				t.observation.exchangeObserver(ExchangeObservation{Kind: "request", Sequence: exchange, Phase: "http_exchange",
+					ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: req.Header})
+				latestExchange.Store(exchange)
+				return observeBody(body, exchange), nil
+			}
+		}
+	}
 	resp, err := t.base.RoundTrip(req)
+	sequence = latestExchange.Load()
 	if resp != nil && t.observation != nil && t.observation.exchangeObserver != nil {
 		phase := "http_exchange"
 		if err == nil && t.observation.stream && resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.Body != nil {
@@ -867,27 +901,72 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 			ObservedAt: time.Now(), Method: req.Method, URL: req.URL.String(), Path: req.URL.Path, Header: resp.Header, StatusCode: resp.StatusCode})
 	}
 	if err != nil {
+		// Close also settles the request when a custom transport returns a dial
+		// failure without releasing the body it owns.
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		if resp != nil {
+			// The outer Codex header transport receives a nil response on this
+			// path, so preserve its routing observation before discarding it.
+			if hooks := cliproxyexecutor.CodexHeaderHooksFromContext(req.Context()); hooks.Observe != nil {
+				hooks.Observe(req.URL, resp.Header.Clone())
+			}
+			if t.observation != nil && t.observation.exchangeObserver != nil {
+				body := &codexHTTPObservationBody{ctx: req.Context(), observe: t.observation.exchangeObserver,
+					exchange: sequence, path: req.URL.Path, transport: "http", direction: "response"}
+				body.finish("read_error", err)
+			}
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+		}
 		return nil, err
 	}
 	if t.observation != nil {
 		t.observation.observeQuotaSignals(resp.Header, time.Now())
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.Header.Get("Location") != "" {
-		_ = resp.Body.Close()
+		if hooks := cliproxyexecutor.CodexHeaderHooksFromContext(req.Context()); hooks.Observe != nil {
+			hooks.Observe(req.URL, resp.Header.Clone())
+		}
+		if t.observation != nil && t.observation.exchangeObserver != nil {
+			body := &codexHTTPObservationBody{ctx: req.Context(), observe: t.observation.exchangeObserver,
+				exchange: sequence, path: req.URL.Path, transport: "http", direction: "response"}
+			body.finish("closed_early", nil)
+		}
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return nil, ErrRedirectNotAllowed
 	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.Body != nil {
-		if wrap, ok := req.Context().Value(streamBodyObserverKey{}).(func(io.ReadCloser, http.Header) io.ReadCloser); ok && wrap != nil {
-			resp.Body = wrap(resp.Body, resp.Header)
-		}
-		wrapDecoded, _ := req.Context().Value(decodedResponseObserverKey{}).(func(io.ReadCloser) io.ReadCloser)
-		var streamObserver func(ExchangeObservation)
+	var bodyObserver func(ExchangeObservation)
+	if t.observation != nil {
+		bodyObserver = t.observation.exchangeObserver
+	}
+	transport := "http"
+	var wrapDecoded func(io.ReadCloser) io.ReadCloser
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if t.observation != nil && t.observation.stream {
-			streamObserver = t.observation.exchangeObserver
+			transport = "sse"
 		}
-		if streamObserver != nil || wrapDecoded != nil {
-			resp.Body = &pendingCodexSSEBody{ReadCloser: resp.Body, ctx: req.Context(), wrapDecoded: wrapDecoded,
-				exchange: sequence, path: req.URL.Path, observe: streamObserver}
+		if resp.Body != nil {
+			if wrap, ok := req.Context().Value(streamBodyObserverKey{}).(func(io.ReadCloser, http.Header) io.ReadCloser); ok && wrap != nil {
+				resp.Body = wrap(resp.Body, resp.Header)
+			}
+		}
+		wrapDecoded, _ = req.Context().Value(decodedResponseObserverKey{}).(func(io.ReadCloser) io.ReadCloser)
+	}
+	if bodyObserver != nil || wrapDecoded != nil {
+		if resp.Body == nil {
+			if bodyObserver != nil {
+				body := &codexHTTPObservationBody{ctx: req.Context(), observe: bodyObserver,
+					exchange: sequence, path: req.URL.Path, transport: transport, direction: "response"}
+				body.finish("eof", io.EOF)
+			}
+		} else {
+			resp.Body = &pendingCodexHTTPResponseBody{ReadCloser: resp.Body, ctx: req.Context(), wrapDecoded: wrapDecoded,
+				exchange: sequence, path: req.URL.Path, observe: bodyObserver, transport: transport}
 		}
 	}
 	return resp, nil

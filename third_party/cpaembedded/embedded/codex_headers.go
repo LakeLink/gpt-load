@@ -97,7 +97,9 @@ func (transport codexHeadersRoundTripper) RoundTrip(request *http.Request) (*htt
 			}
 			request.Body = io.NopCloser(bytes.NewReader(body))
 			request.ContentLength = int64(len(body))
-			request.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+			if request.GetBody != nil {
+				request.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+			}
 		}
 		if metadata := transport.source.Values("X-Codex-Turn-Metadata"); len(metadata) > 0 {
 			request.Header["X-Codex-Turn-Metadata"] = append([]string(nil), metadata...)

@@ -68,7 +68,7 @@ func TestObservationSSEBeforeCompletion(t *testing.T) {
 			defer plugin.CloseNow()
 			if !lateSubscription {
 				fixture.command(t, plugin, "subscribe", "start")
-				readObservation(t, plugin)
+				readObservationWithoutHTTP(t, plugin)
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -102,12 +102,12 @@ func TestObservationSSEBeforeCompletion(t *testing.T) {
 			if lateSubscription {
 				<-upstreamStarted
 				fixture.command(t, plugin, "subscribe", "start")
-				readObservation(t, plugin)
+				readObservationWithoutHTTP(t, plugin)
 				close(releaseHeaders)
 			} else {
-				requestEvent = readObservation(t, plugin)
+				requestEvent = readObservationWithoutHTTP(t, plugin)
 			}
-			responseEvent := readObservation(t, plugin)
+			responseEvent := readObservationWithoutHTTP(t, plugin)
 			responseData := responseEvent["data"].(map[string]any)
 			if responseEvent["type"] != "upstream.response" || responseData["phase"] != "sse_initialization" || responseData["stream"] != true || responseData["status_code"] != int64(200) {
 				t.Fatalf("stream response=%#v", responseEvent)
@@ -137,7 +137,7 @@ func TestObservationSSEBeforeCompletion(t *testing.T) {
 			var rawBytes, streamSequence int64
 			var streamEnded bool
 			for {
-				event := readObservation(t, plugin)
+				event := readObservationWithoutHTTP(t, plugin)
 				if event["type"] == "request.finished" {
 					final = event
 					break
@@ -211,7 +211,7 @@ func TestObservationConcurrentExchangesKeepRequestIdentity(t *testing.T) {
 	plugin := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 	defer plugin.CloseNow()
 	fixture.command(t, plugin, "subscribe", "start")
-	readObservation(t, plugin)
+	readObservationWithoutHTTP(t, plugin)
 	type result struct {
 		id, marker string
 		err        error
@@ -235,7 +235,7 @@ func TestObservationConcurrentExchangesKeepRequestIdentity(t *testing.T) {
 	requests := make(map[string]bool)
 	responses := make(map[string]string)
 	for range count * 2 {
-		event := readObservation(t, plugin)
+		event := readObservationWithoutHTTP(t, plugin)
 		data := event["data"].(map[string]any)
 		id := data["request_id"].(string)
 		if data["attempt_id"] != id+":1" || data["exchange_sequence"] != int64(1) || data["attempt_sequence"] != int64(1) {
@@ -256,7 +256,7 @@ func TestObservationConcurrentExchangesKeepRequestIdentity(t *testing.T) {
 		t.Fatalf("requests=%#v responses=%#v", requests, responses)
 	}
 	for range count {
-		event := readObservation(t, plugin)
+		event := readObservationWithoutHTTP(t, plugin)
 		data := event["data"].(map[string]any)
 		id := data["request_id"].(string)
 		if event["type"] != "request.finished" || !requests[id] || responses[id] == "" || !strings.Contains(string(data["request_body"].([]byte)), responses[id]) {
@@ -284,54 +284,15 @@ func TestObservationGatewayRetryCreatesNewAttempt(t *testing.T) {
 	}))
 	defer upstream.Close()
 	fixture := newObservationHost(t, upstream)
-	err := fixture.deps.Invoke(func(registry *state.CredentialRegistry, manager *state.Manager, keys encryption.Service) {
-		var first models.Credential
-		if err := fixture.db.First(&first).Error; err != nil {
-			t.Fatal(err)
-		}
-		backupGroup := models.Group{Name: "observation-backup", ChannelID: "codex", ConnectionType: models.ConnectionTypeSubscription, Params: models.JSON(`{}`), Models: models.JSON(`[]`), Overrides: models.JSON(`{}`), Enabled: true}
-		if err := fixture.db.Create(&backupGroup).Error; err != nil {
-			t.Fatal(err)
-		}
-		canonical, err := codex.MarshalCredential(codex.Credential{Type: codex.Provider, AccessToken: "backup-access", RefreshToken: "backup-refresh", AccountID: "backup-account", Expire: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ciphertext, err := keys.Encrypt(string(canonical))
-		if err != nil {
-			t.Fatal(err)
-		}
-		second := models.Credential{GroupID: backupGroup.ID, Data: ciphertext, Fingerprint: keys.Hash(string(canonical)), IdentityFingerprint: keys.Hash("backup-account"), SecretVersion: 2, AuthState: models.CredentialAuthStateReady, Status: models.CredentialStatusActive}
-		if err := fixture.db.Create(&second).Error; err != nil {
-			t.Fatal(err)
-		}
-		params, _ := json.Marshal(map[string]string{"base_url": upstream.URL})
-		input := state.CompileInput{ChannelRegistry: channel.NewRegistry(), AccessKeys: []state.AccessKeyConfig{{ID: 1, Name: "local", KeyHash: keys.Hash("client-test-key"), Status: state.AccessKeyStatusActive, RecordRequestBody: true}}}
-		var entries []state.CredentialEntry
-		for index, row := range []models.Credential{first, second} {
-			generation := stateloader.CredentialIdentityGeneration(row.IdentityFingerprint, "codex", "subscription", json.RawMessage(`{}`))
-			input.Groups = append(input.Groups, state.GroupConfig{ID: row.GroupID, Name: []string{"primary", "backup"}[index], ChannelID: channel.Codex, Priority: int32(100 - index*100), ConnectionType: "subscription", Params: params, Models: []state.ModelConfig{{ID: "gpt-5"}}, Enabled: true})
-			input.Credentials = append(input.Credentials, state.CredentialConfig{ID: row.ID, GroupID: row.GroupID, Version: row.SecretVersion, IdentityGeneration: generation, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive})
-			entries = append(entries, state.CredentialEntry{ID: row.ID, GroupID: row.GroupID, Version: row.SecretVersion, IdentityGeneration: generation, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data})
-		}
-		if err := registry.ReplaceCredentials(entries); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := manager.Publish(input); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	configureObservationRetry(t, fixture, upstream.URL)
 	plugin := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 	defer plugin.CloseNow()
 	fixture.command(t, plugin, "subscribe", "start")
-	readObservation(t, plugin)
+	readObservationWithoutHTTP(t, plugin)
 	requestID := fixture.request(t)
 	var processData []map[string]any
 	for range 4 {
-		event := readObservation(t, plugin)
+		event := readObservationWithoutHTTP(t, plugin)
 		data := event["data"].(map[string]any)
 		sequence := int64(len(processData)/2 + 1)
 		if data["request_id"] != requestID || data["attempt_sequence"] != sequence || data["exchange_sequence"] != int64(1) || data["credential_id"] != sequence || data["credential_version"] != sequence {
@@ -342,7 +303,7 @@ func TestObservationGatewayRetryCreatesNewAttempt(t *testing.T) {
 	if processData[0]["attempt_id"] == processData[2]["attempt_id"] || processData[1]["headers"].(map[string]any)["X-Account-Observed"].([]any)[0] != "local-account" || processData[3]["headers"].(map[string]any)["X-Account-Observed"].([]any)[0] != "backup-account" {
 		t.Fatalf("retry correlation=%#v", processData)
 	}
-	final := readObservation(t, plugin)
+	final := readObservationWithoutHTTP(t, plugin)
 	data := final["data"].(map[string]any)
 	attempts := data["attempts"].([]any)
 	if final["type"] != "request.finished" || data["status"] != "success" || len(attempts) != 2 || calls.Load() != 2 {
@@ -373,17 +334,61 @@ func TestObservationTransportFailureHasFinalAttemptWithoutResponse(t *testing.T)
 	plugin := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 	defer plugin.CloseNow()
 	fixture.command(t, plugin, "subscribe", "start")
-	readObservation(t, plugin)
+	readObservationWithoutHTTP(t, plugin)
 	id := fixture.requestStatus(t, http.StatusBadGateway, "")
-	request := readObservation(t, plugin)
-	final := readObservation(t, plugin)
+	request := readObservationWithoutHTTP(t, plugin)
+	final := readObservationWithoutHTTP(t, plugin)
 	requestData := request["data"].(map[string]any)
 	finalData := final["data"].(map[string]any)
-	if request["type"] != "upstream.request" || final["type"] != "request.finished" || requestData["request_id"] != id || finalData["request_id"] != id || finalData["status"] != "error" || final["seq"] != int64(2) {
+	if request["type"] != "upstream.request" || final["type"] != "request.finished" || requestData["request_id"] != id || finalData["request_id"] != id || finalData["status"] != "error" || final["seq"].(int64) <= request["seq"].(int64) {
 		t.Fatalf("request=%#v final=%#v", request, final)
 	}
 	attempt := finalData["attempts"].([]any)[0].(map[string]any)
 	if attempt["attempt_id"] != requestData["attempt_id"] || attempt["dispatch_state"] != "not_sent" || attempt["response_started"] != false {
 		t.Fatalf("transport evidence=%#v", attempt)
+	}
+}
+
+func configureObservationRetry(t *testing.T, fixture *observationHost, upstreamURL string) {
+	t.Helper()
+	err := fixture.deps.Invoke(func(registry *state.CredentialRegistry, manager *state.Manager, keys encryption.Service) {
+		var first models.Credential
+		if err := fixture.db.First(&first).Error; err != nil {
+			t.Fatal(err)
+		}
+		backupGroup := models.Group{Name: "observation-backup", ChannelID: "codex", ConnectionType: models.ConnectionTypeSubscription, Params: models.JSON(`{}`), Models: models.JSON(`[]`), Overrides: models.JSON(`{}`), Enabled: true}
+		if err := fixture.db.Create(&backupGroup).Error; err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := codex.MarshalCredential(codex.Credential{Type: codex.Provider, AccessToken: "backup-access", RefreshToken: "backup-refresh", AccountID: "backup-account", Expire: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ciphertext, err := keys.Encrypt(string(canonical))
+		if err != nil {
+			t.Fatal(err)
+		}
+		second := models.Credential{GroupID: backupGroup.ID, Data: ciphertext, Fingerprint: keys.Hash(string(canonical)), IdentityFingerprint: keys.Hash("backup-account"), SecretVersion: 2, AuthState: models.CredentialAuthStateReady, Status: models.CredentialStatusActive}
+		if err := fixture.db.Create(&second).Error; err != nil {
+			t.Fatal(err)
+		}
+		params, _ := json.Marshal(map[string]string{"base_url": upstreamURL})
+		input := state.CompileInput{ChannelRegistry: channel.NewRegistry(), AccessKeys: []state.AccessKeyConfig{{ID: 1, Name: "local", KeyHash: keys.Hash("client-test-key"), Status: state.AccessKeyStatusActive, RecordRequestBody: true}}}
+		var entries []state.CredentialEntry
+		for index, row := range []models.Credential{first, second} {
+			generation := stateloader.CredentialIdentityGeneration(row.IdentityFingerprint, "codex", "subscription", json.RawMessage(`{}`))
+			input.Groups = append(input.Groups, state.GroupConfig{ID: row.GroupID, Name: []string{"primary", "backup"}[index], ChannelID: channel.Codex, Priority: int32(100 - index*100), ConnectionType: "subscription", Params: params, Models: []state.ModelConfig{{ID: "gpt-5"}}, Enabled: true})
+			input.Credentials = append(input.Credentials, state.CredentialConfig{ID: row.ID, GroupID: row.GroupID, Version: row.SecretVersion, IdentityGeneration: generation, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive})
+			entries = append(entries, state.CredentialEntry{ID: row.ID, GroupID: row.GroupID, Version: row.SecretVersion, IdentityGeneration: generation, IdentityFingerprint: row.IdentityFingerprint, Fingerprint: row.Fingerprint, Status: state.CredentialStatusActive, EncryptedValue: row.Data})
+		}
+		if err := registry.ReplaceCredentials(entries); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.Publish(input); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

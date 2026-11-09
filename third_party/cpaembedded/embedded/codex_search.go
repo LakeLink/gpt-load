@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 type codexSearchHTTPError struct {
@@ -61,8 +64,22 @@ func (e *CodexHTTPExecutor) executeSearchCanonical(
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 	result := ExecuteResponse{StatusCode: resp.StatusCode, Headers: resp.Header.Clone(), UpstreamRequestPath: req.URL.Path}
+	// HttpRequest bypasses CPA's Responses decoder. Decode and attach the same
+	// body observer here before the search reader consumes the response.
+	decoded, err := helps.DecodeResponseBody(resp.Body, resp.Header)
+	if err != nil {
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return result, &codexSearchHTTPError{status: resp.StatusCode, cause: err,
+				retryAfter: boundedOAuthRetryAfter(resp.Header, time.Now())}
+		}
+		return result, fmt.Errorf("decode Codex search response: %w", err)
+	}
+	if observer, ok := resp.Body.(cliproxyexecutor.HTTPResponseBodyObserver); ok {
+		decoded = observer.ObserveDecodedHTTPResponseBody(decoded)
+	}
+	resp.Body = decoded
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxObservedBodyBytes+1))
 	if err == nil && len(body) > maxObservedBodyBytes {
 		err = fmt.Errorf("Codex search response exceeds size limit")

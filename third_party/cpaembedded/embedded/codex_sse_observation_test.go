@@ -75,6 +75,9 @@ func TestCodexSSEObservationDecodedBytes(t *testing.T) {
 				Type: ProviderCodex, AccessToken: "access", RefreshToken: "refresh", AccountID: "account",
 			}, ExecuteRequest{Model: "requested-model", Payload: []byte(`{"input":"hello"}`), Format: "openai-response",
 				ObserveExchange: func(fact ExchangeObservation) {
+					if fact.Stream != nil && fact.Stream.Direction == "request" {
+						return
+					}
 					fact.Body = bytes.Clone(fact.Body)
 					fact.Header = fact.Header.Clone()
 					facts = append(facts, fact)
@@ -122,7 +125,7 @@ func TestCodexSSEObservationReadBoundaries(t *testing.T) {
 			raw := bytes.Repeat([]byte("☃\r\n"), 15000)
 			var facts []ExchangeObservation
 			active := false
-			wire := &pendingCodexSSEBody{ctx: t.Context(), exchange: 7, ReadCloser: &sseFinalReadBody{body: raw, err: test.err},
+			wire := &pendingCodexHTTPResponseBody{ctx: t.Context(), exchange: 7, ReadCloser: &sseFinalReadBody{body: raw, err: test.err},
 				observe: func(fact ExchangeObservation) {
 					if active {
 						fact.Body = bytes.Clone(fact.Body)
@@ -149,7 +152,7 @@ func TestCodexSSEObservationReadBoundaries(t *testing.T) {
 			}
 			var captured bytes.Buffer
 			for i, fact := range facts[:len(facts)-1] {
-				if fact.Sequence != 7 || fact.Stream.StreamSequence != uint64(i+2) || fact.Stream.ByteOffset != uint64(6+captured.Len()) || len(fact.Body) > maxSSEObservationChunk || fact.Stream.BodySize != uint64(len(fact.Body)) {
+				if fact.Sequence != 7 || fact.Stream.StreamSequence != uint64(i+2) || fact.Stream.ByteOffset != uint64(6+captured.Len()) || len(fact.Body) > maxHTTPObservationChunk || fact.Stream.BodySize != uint64(len(fact.Body)) {
 					t.Fatalf("chunk=%+v", fact)
 				}
 				captured.Write(fact.Body)
@@ -182,7 +185,7 @@ func TestCodexSSEObservationConcurrentClose(t *testing.T) {
 			defer cancel()
 			reader := &sseBlockedReadBody{entered: make(chan struct{}), closed: make(chan struct{})}
 			var facts []ExchangeObservation
-			wire := &pendingCodexSSEBody{ctx: ctx, ReadCloser: reader, observe: func(fact ExchangeObservation) {
+			wire := &pendingCodexHTTPResponseBody{ctx: ctx, ReadCloser: reader, observe: func(fact ExchangeObservation) {
 				fact.Body = bytes.Clone(fact.Body)
 				facts = append(facts, fact)
 			}}
@@ -232,4 +235,69 @@ func (body *sseBlockedReadBody) Read(buffer []byte) (int, error) {
 func (body *sseBlockedReadBody) Close() error {
 	body.once.Do(func() { close(body.closed) })
 	return nil
+}
+
+func TestCodexHTTPObservationEmptyBodiesAndRedirect(t *testing.T) {
+	for _, test := range []struct {
+		name                      string
+		requestBody, responseBody io.ReadCloser
+		status                    int
+		reason                    string
+		failure                   error
+	}{
+		{name: "nil", status: http.StatusOK, reason: "eof"},
+		{name: "NoBody", requestBody: http.NoBody, responseBody: http.NoBody, status: http.StatusOK, reason: "eof"},
+		{name: "dial failure", requestBody: io.NopCloser(strings.NewReader("unconsumed")), failure: errors.New("dial failed"), reason: "closed_early"},
+		{name: "redirect", responseBody: io.NopCloser(strings.NewReader("unconsumed")), status: http.StatusFound, reason: "closed_early"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var facts []ExchangeObservation
+			transport := noRedirectRoundTripper{observation: &executionObservation{exchangeObserver: func(fact ExchangeObservation) {
+				if fact.Stream != nil {
+					facts = append(facts, fact)
+				}
+			}},
+				base: claudeRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if test.failure != nil {
+						return nil, test.failure
+					}
+					return &http.Response{StatusCode: test.status, Body: test.responseBody, Header: http.Header{"Location": {"https://other.example"}}}, nil
+				})}
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://upstream.example/responses", test.requestBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := transport.RoundTrip(request)
+			if response != nil && response.Body != nil {
+				if body, ok := response.Body.(*pendingCodexHTTPResponseBody); ok {
+					response.Body = body.ObserveDecodedHTTPResponseBody(body)
+				}
+				if _, err := io.Copy(io.Discard, response.Body); err != nil {
+					t.Fatal(err)
+				}
+				if err := response.Body.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if (err != nil) != (test.status == http.StatusFound || test.failure != nil) {
+				t.Fatalf("RoundTrip error = %v", err)
+			}
+			wantFacts := 2
+			if test.failure != nil {
+				wantFacts = 1
+			}
+			if len(facts) != wantFacts {
+				t.Fatalf("body facts = %d", len(facts))
+			}
+			for index, fact := range facts {
+				wantReason := "eof"
+				if index == 1 || test.failure != nil {
+					wantReason = test.reason
+				}
+				if fact.Stream.Kind != "end" || fact.Stream.Transport != "http" || fact.Stream.TotalBodyBytes != 0 || fact.Stream.LastStreamSequence != 0 || fact.Stream.EndReason != wantReason {
+					t.Fatalf("end = %+v", fact.Stream)
+				}
+			}
+		})
+	}
 }

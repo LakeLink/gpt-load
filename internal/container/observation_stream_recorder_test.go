@@ -20,7 +20,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Both transports cross the real host and the independent recorder process.
+// HTTP request, SSE response, and WebSocket content cross the host and standalone recorder.
 func TestObservationStandaloneStreamRecorder(t *testing.T) {
 	binaryPath := os.Getenv("RECORDER_BINARY")
 	if binaryPath == "" {
@@ -55,6 +55,7 @@ func TestObservationStandaloneStreamRecorder(t *testing.T) {
 			close(release)
 		}
 	}()
+	httpReceived := make(chan []byte, 1)
 	wsReceived := make(chan []byte, 2)
 	wsClosed := make(chan struct{})
 	wsText := []byte(" {\"type\":\"response.created\",\"metadata\":\"原始\",\"response\":{\"id\":\"resp_local\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}} ")
@@ -92,6 +93,11 @@ func TestObservationStandaloneStreamRecorder(t *testing.T) {
 			_, _, _ = conn.Read(r.Context())
 			return
 		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return
+		}
+		httpReceived <- body
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, prefix)
 		w.(http.Flusher).Flush()
@@ -177,7 +183,7 @@ func TestObservationStandaloneStreamRecorder(t *testing.T) {
 		t.Fatal(err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(decoded))
-	var sse bytes.Buffer
+	var sse, httpRequest bytes.Buffer
 	wsBodies := map[string][][]byte{}
 	sequences := map[string]uint64{}
 	offsets := map[string]uint64{}
@@ -219,7 +225,7 @@ func TestObservationStandaloneStreamRecorder(t *testing.T) {
 			t.Fatalf("stream protocol=%+v", data)
 		}
 		key := data.Transport + ":" + data.Direction
-		if data.Transport == "sse" {
+		if data.Transport == "sse" || data.Transport == "http" {
 			if sseID == "" {
 				sseID = data.RequestID
 			}
@@ -240,7 +246,12 @@ func TestObservationStandaloneStreamRecorder(t *testing.T) {
 				t.Fatalf("content continuity=%+v", event)
 			}
 			offsets[key] += data.Size
-			if data.Transport == "sse" {
+			if data.Transport == "http" {
+				if data.Direction != "request" || len(data.Body) > 32*1024 {
+					t.Fatalf("HTTP request content=%+v", data)
+				}
+				httpRequest.Write(data.Body)
+			} else if data.Transport == "sse" {
 				sse.Write(data.Body)
 			} else {
 				wsBodies[data.Direction] = append(wsBodies[data.Direction], data.Body)
@@ -257,6 +268,9 @@ func TestObservationStandaloneStreamRecorder(t *testing.T) {
 				t.Fatalf("end counters=%+v", data)
 			}
 		}
+	}
+	if sent := <-httpReceived; !bytes.Equal(sent, httpRequest.Bytes()) || httpRequest.Len() == 0 {
+		t.Fatalf("HTTP request sent=%q recorded=%q", sent, httpRequest.Bytes())
 	}
 	if sse.String() != prefix+suffix {
 		t.Fatalf("raw SSE mismatch: got %q want %q", sse.String(), prefix+suffix)
@@ -276,13 +290,14 @@ func TestObservationStandaloneStreamRecorder(t *testing.T) {
 	if len(wsBodies["response"]) != 3 || !bytes.Equal(wsBodies["response"][0], wsText) || !bytes.Equal(wsBodies["response"][1], wsCompleted) || !bytes.Equal(wsBodies["response"][2], wsBinary) {
 		t.Fatalf("WS responses=%q", wsBodies["response"])
 	}
-	for _, key := range []string{"sse:response", "websocket:request", "websocket:response"} {
+	for _, key := range []string{"http:request", "sse:response", "websocket:request", "websocket:response"} {
 		if ends[key] != 1 {
 			t.Fatalf("missing end %s: %v", key, ends)
 		}
 	}
 	writeObservationArtifact(t, "sse-upstream.txt", []byte(prefix+suffix))
 	writeObservationArtifact(t, "sse-reconstructed.txt", sse.Bytes())
+	writeObservationArtifact(t, "sse-http-request.json", httpRequest.Bytes())
 	writeObservationArtifact(t, "events.jsonl", decoded)
 	recording, err := os.ReadFile(output)
 	if err != nil {

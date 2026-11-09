@@ -55,14 +55,14 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 	if err := plugin.Write(t.Context(), websocket.MessageBinary, subscribeBytes); err != nil {
 		t.Fatal(err)
 	}
-	subscribed := readObservation(t, plugin)
+	subscribed := readObservationWithoutHTTP(t, plugin)
 	if subscribed["type"] != "subscribed" || subscribed["command_id"] != "sample-command" || subscribed["boot_id"] == "" || subscribed["max_event_bytes"] != int64(4000000) {
 		t.Fatalf("subscription = %#v", subscribed)
 	}
 	plugin.SetReadLimit(int64(subscribed["max_event_bytes"].(int64)))
 	requestID := fixture.request(t)
-	requestEvent := readObservation(t, plugin)
-	responseEvent := readObservation(t, plugin)
+	requestEvent := readObservationWithoutHTTP(t, plugin)
+	responseEvent := readObservationWithoutHTTP(t, plugin)
 	for index, process := range []map[string]any{requestEvent, responseEvent} {
 		data := process["data"].(map[string]any)
 		wantType := []string{"upstream.request", "upstream.response"}[index]
@@ -77,9 +77,9 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 	if responseData["status_code"] != int64(200) || !reflect.DeepEqual(responseData["headers"].(map[string]any)["X-Research-Raw"], []any{"first", "second"}) {
 		t.Fatalf("raw response = %#v", responseData)
 	}
-	event := readObservation(t, plugin)
+	event := readObservationWithoutHTTP(t, plugin)
 	data := event["data"].(map[string]any)
-	if event["type"] != "request.finished" || event["seq"] != int64(3) || event["boot_id"] != subscribed["boot_id"] || event["observed_at"].(int64) == 0 || data["request_id"] != requestID || data["status"] != "success" || data["status_code"] != int64(200) {
+	if event["type"] != "request.finished" || event["seq"].(int64) <= responseEvent["seq"].(int64) || event["boot_id"] != subscribed["boot_id"] || event["observed_at"].(int64) == 0 || data["request_id"] != requestID || data["status"] != "success" || data["status_code"] != int64(200) {
 		t.Fatalf("event = %#v", event)
 	}
 	if !reflect.DeepEqual(data["request_body"], []byte(`{"model":"gpt-5","input":"hello"}`)) {
@@ -123,7 +123,7 @@ func TestObservationCodexRequestFinished(t *testing.T) {
 		t.Fatalf("log=%+v observation=%#v", persisted, data)
 	}
 	fixture.command(t, plugin, "unsubscribe", "stop")
-	if reply := readObservation(t, plugin); reply["type"] != "unsubscribed" || reply["command_id"] != "stop" {
+	if reply := readObservationWithoutHTTP(t, plugin); reply["type"] != "unsubscribed" || reply["command_id"] != "stop" {
 		t.Fatalf("unsubscribe = %#v", reply)
 	}
 	if headers := <-upstreamCalls; headers.Get("Authorization") != "Bearer local-access" || headers.Get("Chatgpt-Account-Id") != "local-account" {
@@ -306,6 +306,19 @@ func readObservation(t *testing.T, conn *websocket.Conn) map[string]any {
 	}
 	return decodeObservation(t, body)
 }
+
+// Header/outcome assertions share the connection with independently tested HTTP bodies.
+func readObservationWithoutHTTP(t *testing.T, conn *websocket.Conn) map[string]any {
+	t.Helper()
+	for {
+		event := readObservation(t, conn)
+		data, _ := event["data"].(map[string]any)
+		if event["type"] == "upstream.stream" && data["transport"] == "http" {
+			continue
+		}
+		return event
+	}
+}
 func decodeObservation(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	handle := &codec.MsgpackHandle{WriteExt: true}
@@ -338,20 +351,20 @@ func TestObservationCodexFailureAndPublicationIsolation(t *testing.T) {
 			conn := fixture.connect(t, "research", "plugin-test-token", observationSubprotocol)
 			defer conn.CloseNow()
 			fixture.command(t, conn, "subscribe", "start")
-			readObservation(t, conn)
+			readObservationWithoutHTTP(t, conn)
 			requestID := fixture.requestStatus(t, http.StatusBadRequest, "local rejection")
 			var event map[string]any
 			if !test.smallQueue {
-				requestEvent := readObservation(t, conn)
-				responseEvent := readObservation(t, conn)
+				requestEvent := readObservationWithoutHTTP(t, conn)
+				responseEvent := readObservationWithoutHTTP(t, conn)
 				responseData := responseEvent["data"].(map[string]any)
 				if requestEvent["type"] != "upstream.request" || responseEvent["type"] != "upstream.response" || responseData["status_code"] != int64(400) || responseData["phase"] != "http_exchange" {
 					t.Fatalf("failed exchange = %#v", responseEvent)
 				}
-				event = readObservation(t, conn)
+				event = readObservationWithoutHTTP(t, conn)
 			}
 			fixture.command(t, conn, "unsubscribe", "stop")
-			if reply := readObservation(t, conn); reply["type"] != "unsubscribed" {
+			if reply := readObservationWithoutHTTP(t, conn); reply["type"] != "unsubscribed" {
 				t.Fatalf("reply=%#v", reply)
 			}
 			if err := fixture.logs.Stop(t.Context()); err != nil {
